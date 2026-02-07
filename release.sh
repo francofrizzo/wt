@@ -4,7 +4,8 @@ set -e
 VERSION="${1:?Usage: ./release.sh <version> (e.g. 0.2.0)}"
 TAG="v$VERSION"
 REPO="francofrizzo/wt"
-TAP_DIR="$(dirname "$0")/../homebrew-tap"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TAP_DIR="$SCRIPT_DIR/../homebrew-tap"
 
 if [ ! -d "$TAP_DIR/.git" ]; then
   echo "Error: homebrew-tap repo not found at $TAP_DIR" >&2
@@ -13,8 +14,8 @@ if [ ! -d "$TAP_DIR/.git" ]; then
 fi
 
 echo "==> Tagging $TAG"
-git tag "$TAG"
-git push origin "$TAG"
+git -C "$SCRIPT_DIR" tag "$TAG"
+git -C "$SCRIPT_DIR" push origin "$TAG"
 
 echo "==> Computing SHA256"
 SHA=$(curl -sL "https://github.com/$REPO/archive/refs/tags/$TAG.tar.gz" | shasum -a 256 | cut -d' ' -f1)
