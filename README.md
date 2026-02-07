@@ -17,13 +17,13 @@ Git worktree manager with GitHub integration. Shows CI status, PR review state, 
 ### Homebrew
 
 ```bash
-brew install OWNER/tap/wt
+brew install francofrizzo/tap/wt
 ```
 
 ### Manual
 
 ```bash
-git clone https://github.com/OWNER/wt.git
+git clone https://github.com/francofrizzo/wt.git
 ln -s "$PWD/wt/bin/wt" /usr/local/bin/wt
 ```
 
