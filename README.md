@@ -35,34 +35,35 @@ ln -s "$PWD/wt/bin/wt" /usr/local/bin/wt
 
 ## Setup
 
-Configure a repository:
+The quickest way to get started — clone a GitHub repo:
 
 ```bash
+wt init https://github.com/owner/myproject
+```
+
+This clones it as a bare repo, detects the GitHub slug and default branch, and writes the config. You're ready to create worktrees immediately.
+
+### Other ways to init
+
+```bash
+# Already inside a worktree or bare repo:
+wt init
+
+# Have an existing bare repo:
 wt init myproject --bare ~/code/myproject.git
 ```
 
-This creates `~/.config/wt/repos/myproject.conf`. The GitHub repo slug is auto-detected from the remote URL.
+### Optional flags
 
-### Full init options
-
-```bash
-wt init myproject \
-  --bare ~/code/myproject.git \
-  --worktrees ~/code/myproject-worktrees \
-  --repo owner/myproject \
-  --workspace ~/myproject.code-workspace \
-  --shared ~/code/myproject-worktrees/.shared \
-  --default-branch main
-```
+All three modes accept these optional flags:
 
 | Option | Description | Default |
 |---|---|---|
-| `--bare` | Path to bare repo | **required** |
 | `--worktrees` | Directory for worktrees | `<bare-parent>/<name>-worktrees` |
 | `--repo` | GitHub `owner/repo` slug | auto-detected from remote |
 | `--workspace` | VS Code `.code-workspace` file | none |
 | `--shared` | Directory copied into new worktrees | none |
-| `--default-branch` | Default branch name | `main` |
+| `--default-branch` | Default branch name | auto-detected from remote HEAD |
 
 ### Config format
 
@@ -72,6 +73,7 @@ Each repo is a sourceable shell file at `~/.config/wt/repos/<name>.conf`:
 BARE="/Users/you/code/myproject.git"
 WORKTREES="/Users/you/code/myproject-worktrees"
 REPO="owner/myproject"
+DEFAULT_BRANCH="main"
 ```
 
 ## Usage

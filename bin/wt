@@ -250,36 +250,110 @@ cmd_prune() {
 }
 
 cmd_init() {
+  local arg="${1:-}"
   local name="" bare="" worktrees="" repo="" workspace="" shared="" default_branch=""
 
-  name="$1"; shift || true
+  # --- Mode 1: wt init <url> — clone from URL ---
+  if [[ "$arg" == http* || "$arg" == git@* ]]; then
+    local url="$arg"; shift
+    name=$(echo "$url" | sed -E 's#.*/##; s/\.git$//')
 
-  if [ -z "$name" ]; then
-    echo "Usage: wt init <name> --bare <path> [--worktrees <path>] [--repo <owner/repo>] [--workspace <path>] [--shared <path>] [--default-branch <branch>]" >&2
-    exit 1
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --name)           name="$2"; shift 2 ;;
+        --worktrees)      worktrees="$2"; shift 2 ;;
+        --workspace)      workspace="$2"; shift 2 ;;
+        --shared)         shared="$2"; shift 2 ;;
+        --default-branch) default_branch="$2"; shift 2 ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+      esac
+    done
+
+    local target="${worktrees:-$PWD}/${name}.git"
+    if [ -n "$worktrees" ]; then
+      target="$(dirname "$worktrees")/${name}.git"
+    fi
+
+    echo "Cloning $url (bare) into $target ..." >&2
+    git clone --bare "$url" "$target" >&2
+
+    bare="$target"
+
+    # Configure fetch to track all remote branches
+    git -C "$bare" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' >&2
+    git -C "$bare" fetch origin >&2
+
+  # --- Mode 2: wt init (no args) — detect from cwd ---
+  elif [ -z "$arg" ] || [[ "$arg" == --* ]]; then
+    # Put $arg back if it was a flag
+    [ -n "$arg" ] && set -- "$arg" "$@"
+
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --bare)           bare="$2"; shift 2 ;;
+        --worktrees)      worktrees="$2"; shift 2 ;;
+        --repo)           repo="$2"; shift 2 ;;
+        --workspace)      workspace="$2"; shift 2 ;;
+        --shared)         shared="$2"; shift 2 ;;
+        --default-branch) default_branch="$2"; shift 2 ;;
+        --name)           name="$2"; shift 2 ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+      esac
+    done
+
+    if [ -z "$bare" ]; then
+      # Try to detect bare repo from cwd
+      local git_dir
+      git_dir=$(git rev-parse --git-common-dir 2>/dev/null || true)
+
+      if [ -z "$git_dir" ] || [ "$git_dir" = ".git" ]; then
+        echo "Not inside a git worktree and no --bare specified." >&2
+        echo "" >&2
+        echo "Usage:" >&2
+        echo "  wt init <github-url>             Clone and configure" >&2
+        echo "  wt init                           Auto-detect from cwd (inside a worktree)" >&2
+        echo "  wt init <name> --bare <path>      Explicit configuration" >&2
+        exit 1
+      fi
+
+      # git_dir points to the bare repo (or .git dir)
+      bare="$(cd "$git_dir" && pwd)"
+    fi
+
+  # --- Mode 3: wt init <name> [--flags] — explicit ---
+  else
+    name="$arg"; shift
+
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --bare)           bare="$2"; shift 2 ;;
+        --worktrees)      worktrees="$2"; shift 2 ;;
+        --repo)           repo="$2"; shift 2 ;;
+        --workspace)      workspace="$2"; shift 2 ;;
+        --shared)         shared="$2"; shift 2 ;;
+        --default-branch) default_branch="$2"; shift 2 ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+      esac
+    done
+
+    if [ -z "$bare" ]; then
+      echo "Error: --bare <path> is required when using wt init <name>" >&2
+      exit 1
+    fi
   fi
 
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --bare)           bare="$2"; shift 2 ;;
-      --worktrees)      worktrees="$2"; shift 2 ;;
-      --repo)           repo="$2"; shift 2 ;;
-      --workspace)      workspace="$2"; shift 2 ;;
-      --shared)         shared="$2"; shift 2 ;;
-      --default-branch) default_branch="$2"; shift 2 ;;
-      *) echo "Unknown option: $1" >&2; exit 1 ;;
-    esac
-  done
+  # --- Resolve paths and defaults ---
 
-  if [ -z "$bare" ]; then
-    echo "Error: --bare <path> is required" >&2
-    exit 1
-  fi
-
-  # Expand to absolute path
+  # Expand bare to absolute path
   bare="$(cd "$(dirname "$bare")" && pwd)/$(basename "$bare")"
 
-  # Infer worktrees directory if not specified
+  # Infer name from bare repo directory if not set
+  if [ -z "$name" ]; then
+    name=$(basename "$bare" .git)
+    name="${name%.bare}"
+  fi
+
+  # Infer worktrees directory
   if [ -z "$worktrees" ]; then
     local parent
     parent="$(dirname "$bare")"
@@ -287,7 +361,7 @@ cmd_init() {
   fi
   worktrees="$(cd "$(dirname "$worktrees")" 2>/dev/null && pwd)/$(basename "$worktrees")" 2>/dev/null || worktrees="$worktrees"
 
-  # Infer GitHub repo from remote if not specified
+  # Infer GitHub repo from remote
   if [ -z "$repo" ]; then
     local remote_url
     remote_url=$(git -C "$bare" remote get-url origin 2>/dev/null || true)
@@ -297,9 +371,19 @@ cmd_init() {
     fi
   fi
 
-  mkdir -p "$CONFIG_DIR"
+  # Infer default branch from remote HEAD
+  if [ -z "$default_branch" ]; then
+    default_branch=$(git -C "$bare" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's#refs/remotes/origin/##' || true)
+  fi
 
+  # Create worktrees directory
+  mkdir -p "$worktrees"
+
+  # --- Write config ---
+
+  mkdir -p "$CONFIG_DIR"
   local conf="$CONFIG_DIR/$name.conf"
+
   {
     echo "BARE=\"$bare\""
     echo "WORKTREES=\"$worktrees\""
@@ -309,9 +393,11 @@ cmd_init() {
     [ -n "$default_branch" ] && echo "DEFAULT_BRANCH=\"$default_branch\""
   } > "$conf"
 
-  echo "Created config: $conf" >&2
   echo "" >&2
+  echo "Configured $name:" >&2
   cat "$conf" >&2
+  echo "" >&2
+  echo "Ready! Run 'wt <branch>' to create your first worktree." >&2
 }
 
 cmd_repos() {
@@ -360,25 +446,20 @@ cmd_help() {
   echo "  wt rm <branch>          Remove a worktree"
   echo "  wt prune                Remove all worktrees with merged PRs"
   echo "  wt repos                List configured repositories"
-  echo "  wt init <name> [opts]   Configure a new repository"
+  echo "  wt init <url>           Clone a repo and configure it"
+  echo "  wt init                 Auto-detect repo from current directory"
+  echo "  wt init <name> --bare   Explicit configuration"
   echo ""
   echo "Options:"
   echo "  --repo <name>           Use a specific configured repo"
   echo ""
-  echo "Init options:"
-  echo "  --bare <path>           Path to bare repo (required)"
-  echo "  --worktrees <path>      Worktree directory (default: <bare-parent>/<name>-worktrees)"
-  echo "  --repo <owner/repo>     GitHub repo slug (auto-detected from remote)"
-  echo "  --workspace <path>      VS Code .code-workspace file to keep in sync"
-  echo "  --shared <path>         Directory of files to copy into new worktrees"
-  echo "  --default-branch <b>    Default branch name (default: main)"
-  echo ""
   echo "Examples:"
-  echo "  wt init myproject --bare ~/code/myproject.git"
-  echo "  wt my-feature                     Create branch off origin/main"
-  echo "  wt my-feature origin/dev          Create branch off origin/dev"
-  echo "  wt list                           Show worktrees with CI/review status"
-  echo "  wt prune                          Clean up merged worktrees"
+  echo "  wt init https://github.com/org/repo   Clone and set up"
+  echo "  wt init                                Detect from cwd"
+  echo "  wt init myproject --bare ~/code/p.git  Explicit bare path"
+  echo "  wt my-feature                          Create branch off default"
+  echo "  wt list                                Show worktrees with CI/review"
+  echo "  wt prune                               Clean up merged worktrees"
 }
 
 # --- main ---
