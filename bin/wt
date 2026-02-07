@@ -1,0 +1,431 @@
+#!/bin/bash
+set -e
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/wt/repos"
+
+# --- config resolution ---
+
+resolve_repo() {
+  if [ -n "${WT_REPO:-}" ]; then
+    local conf="$CONFIG_DIR/$WT_REPO.conf"
+    if [ ! -f "$conf" ]; then
+      echo "Unknown repo: $WT_REPO (no config at $conf)" >&2
+      exit 1
+    fi
+    source "$conf"
+    return 0
+  fi
+
+  for conf in "$CONFIG_DIR"/*.conf; do
+    [ -f "$conf" ] || continue
+    (
+      source "$conf"
+      case "$PWD" in
+        "$BARE"*|"$WORKTREES"*) exit 0 ;;
+      esac
+      exit 1
+    ) && { source "$conf"; return 0; }
+  done
+
+  local configs=("$CONFIG_DIR"/*.conf)
+  if [ ${#configs[@]} -eq 1 ] && [ -f "${configs[0]}" ]; then
+    source "${configs[0]}"
+    return 0
+  fi
+
+  echo "Could not determine repo. Use --repo <name> or cd into a worktree." >&2
+  echo "Configured repos:" >&2
+  for conf in "$CONFIG_DIR"/*.conf; do
+    [ -f "$conf" ] || continue
+    echo "  $(basename "$conf" .conf)" >&2
+  done
+  exit 1
+}
+
+# --- workspace helpers (no-op when WORKSPACE is unset) ---
+
+workspace_add() {
+  [ -n "${WORKSPACE:-}" ] && [ -f "$WORKSPACE" ] || return 0
+  local wt_path="$1"
+  jq --arg p "$wt_path" '.folders = [{"path": $p}] + .folders' "$WORKSPACE" > "$WORKSPACE.tmp" \
+    && mv "$WORKSPACE.tmp" "$WORKSPACE"
+}
+
+workspace_remove() {
+  [ -n "${WORKSPACE:-}" ] && [ -f "$WORKSPACE" ] || return 0
+  local wt_path="$1"
+  jq --arg p "$wt_path" '.folders = [.folders[] | select(.path != $p)]' "$WORKSPACE" > "$WORKSPACE.tmp" \
+    && mv "$WORKSPACE.tmp" "$WORKSPACE"
+}
+
+# --- github helpers ---
+
+gh_status() {
+  local branch="$1" review="$2"
+  local checks_json
+
+  checks_json=$(gh api "repos/$REPO/commits/$branch/check-runs" --jq '.check_runs[] | .conclusion' 2>/dev/null || true)
+
+  local ci=""
+  if [ -z "$checks_json" ]; then
+    ci="-"
+  elif echo "$checks_json" | grep -q "failure"; then
+    ci="\033[31mfail\033[0m"
+  elif echo "$checks_json" | grep -q "null"; then
+    ci="\033[33mrunning\033[0m"
+  else
+    ci="\033[32mpass\033[0m"
+  fi
+
+  local rv=""
+  case "$review" in
+    APPROVED)          rv="\033[32mapproved\033[0m" ;;
+    CHANGES_REQUESTED) rv="\033[31mchanges\033[0m" ;;
+    "")                rv="pending" ;;
+    *)                 rv="$review" ;;
+  esac
+
+  echo -e "ci:${ci} review:${rv}"
+}
+
+# --- commands ---
+
+cmd_list() {
+  local open_prs merged_prs
+  open_prs=$(gh pr list --repo "$REPO" --state open --json headRefName,number,reviewDecision 2>/dev/null || echo "[]")
+  merged_prs=$(gh pr list --repo "$REPO" --state merged --limit 50 --json headRefName,number,mergedAt 2>/dev/null || echo "[]")
+
+  local first=true
+  while IFS= read -r line; do
+    local wt_path branch_ref
+    wt_path=$(echo "$line" | cut -d' ' -f1)
+    branch_ref=$(echo "$line" | cut -d' ' -f2)
+
+    [ "$wt_path" = "$BARE" ] && continue
+
+    local branch="${branch_ref#refs/heads/}"
+    local dir_name
+    dir_name=$(basename "$wt_path")
+
+    local last_commit
+    last_commit=$(git -C "$wt_path" log -1 --format='%ar  %s' 2>/dev/null || echo "no commits")
+    last_commit="${last_commit:0:72}"
+
+    local created
+    created=$(stat -f '%SB' -t '%Y-%m-%d' "$wt_path" 2>/dev/null || echo "?")
+
+    local gh_line="" name_color="1;33"
+    if [ "$branch" = "${DEFAULT_BRANCH:-main}" ]; then
+      name_color="1;34"
+    fi
+
+    local pr_number
+    pr_number=$(echo "$open_prs" | jq -r --arg b "$branch" '.[] | select(.headRefName == $b) | .number' 2>/dev/null)
+
+    if [ -n "$pr_number" ]; then
+      local pr_review
+      pr_review=$(echo "$open_prs" | jq -r --arg b "$branch" '.[] | select(.headRefName == $b) | .reviewDecision' 2>/dev/null)
+      gh_line="PR #${pr_number}: $(gh_status "$branch" "$pr_review")"
+    else
+      local merged_number merged_at
+      merged_number=$(echo "$merged_prs" | jq -r --arg b "$branch" '[.[] | select(.headRefName == $b)] | first | .number // empty' 2>/dev/null)
+      if [ -n "$merged_number" ]; then
+        merged_at=$(echo "$merged_prs" | jq -r --arg b "$branch" '[.[] | select(.headRefName == $b)] | first | .mergedAt // empty' 2>/dev/null)
+        local merged_date="${merged_at%%T*}"
+        gh_line="\033[32mmerged\033[0m PR #${merged_number} ($merged_date)"
+        name_color="2;37"
+      fi
+    fi
+
+    if [ "$first" = true ]; then
+      first=false
+    else
+      echo ""
+    fi
+
+    echo -e "\033[${name_color}m$dir_name\033[0m  ($branch)  created $created"
+    echo "  commit: $last_commit"
+    if [ -n "$gh_line" ]; then
+      echo -e "  $gh_line"
+    fi
+  done < <(git -C "$BARE" worktree list --porcelain | awk '/^worktree /{wt=$2} /^branch /{print wt, $2}')
+}
+
+cmd_add() {
+  local branch="$1"
+  local base="${2:-origin/${DEFAULT_BRANCH:-main}}"
+  local dir="${branch//\//-}"
+
+  if [ -z "$branch" ]; then
+    echo "Usage: wt add <branch> [base]" >&2
+    exit 1
+  fi
+
+  if [ -d "$WORKTREES/$dir" ]; then
+    echo "Worktree already exists: $WORKTREES/$dir" >&2
+    echo "$WORKTREES/$dir"
+    return 0
+  fi
+
+  echo "Fetching origin..." >&2
+  git -C "$BARE" fetch origin >&2
+
+  if git -C "$BARE" show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null || \
+     git -C "$BARE" show-ref --verify --quiet "refs/remotes/origin/$branch" 2>/dev/null; then
+    git -C "$BARE" worktree add "$WORKTREES/$dir" "$branch" >&2
+  else
+    git -C "$BARE" worktree add --no-track -b "$branch" "$WORKTREES/$dir" "$base" >&2
+  fi
+
+  if [ -d "${SHARED:-}" ]; then
+    cp -r "$SHARED"/. "$WORKTREES/$dir"/
+  fi
+
+  workspace_add "$WORKTREES/$dir"
+  echo "Ready: $WORKTREES/$dir" >&2
+  echo "$WORKTREES/$dir"
+}
+
+cmd_rm() {
+  local branch="$1"
+  if [ -z "$branch" ]; then
+    echo "Usage: wt rm <branch>" >&2
+    exit 1
+  fi
+  local dir="${branch//\//-}"
+  git -C "$BARE" worktree remove "$WORKTREES/$dir" >&2
+  workspace_remove "$WORKTREES/$dir"
+  echo "Removed: $WORKTREES/$dir" >&2
+}
+
+cmd_prune() {
+  local merged_prs
+  merged_prs=$(gh pr list --repo "$REPO" --state merged --limit 50 --json headRefName,number 2>/dev/null || echo "[]")
+
+  local to_remove=()
+  while IFS= read -r line; do
+    local wt_path branch_ref
+    wt_path=$(echo "$line" | cut -d' ' -f1)
+    branch_ref=$(echo "$line" | cut -d' ' -f2)
+
+    [ "$wt_path" = "$BARE" ] && continue
+
+    local branch="${branch_ref#refs/heads/}"
+    [ "$branch" = "${DEFAULT_BRANCH:-main}" ] && continue
+
+    local pr_number
+    pr_number=$(echo "$merged_prs" | jq -r --arg b "$branch" '[.[] | select(.headRefName == $b)] | first | .number // empty' 2>/dev/null)
+
+    if [ -n "$pr_number" ]; then
+      to_remove+=("$wt_path|$branch|$pr_number")
+    fi
+  done < <(git -C "$BARE" worktree list --porcelain | awk '/^worktree /{wt=$2} /^branch /{print wt, $2}')
+
+  if [ ${#to_remove[@]} -eq 0 ]; then
+    echo "No merged worktrees to remove."
+    return 0
+  fi
+
+  echo "Will remove ${#to_remove[@]} merged worktree(s):"
+  for entry in "${to_remove[@]}"; do
+    local wt_path branch pr_number
+    IFS='|' read -r wt_path branch pr_number <<< "$entry"
+    echo -e "  \033[2;37m$(basename "$wt_path")\033[0m  ($branch)  PR #$pr_number"
+  done
+
+  echo ""
+  printf "Proceed? [y/N] "
+  read -r answer
+  if [[ "$answer" != [yY] ]]; then
+    echo "Aborted."
+    return 0
+  fi
+
+  for entry in "${to_remove[@]}"; do
+    local wt_path branch pr_number
+    IFS='|' read -r wt_path branch pr_number <<< "$entry"
+    git -C "$BARE" worktree remove "$wt_path" 2>&1 && workspace_remove "$wt_path"
+    echo "Removed: $(basename "$wt_path")"
+  done
+}
+
+cmd_init() {
+  local name="" bare="" worktrees="" repo="" workspace="" shared="" default_branch=""
+
+  name="$1"; shift || true
+
+  if [ -z "$name" ]; then
+    echo "Usage: wt init <name> --bare <path> [--worktrees <path>] [--repo <owner/repo>] [--workspace <path>] [--shared <path>] [--default-branch <branch>]" >&2
+    exit 1
+  fi
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --bare)           bare="$2"; shift 2 ;;
+      --worktrees)      worktrees="$2"; shift 2 ;;
+      --repo)           repo="$2"; shift 2 ;;
+      --workspace)      workspace="$2"; shift 2 ;;
+      --shared)         shared="$2"; shift 2 ;;
+      --default-branch) default_branch="$2"; shift 2 ;;
+      *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+  done
+
+  if [ -z "$bare" ]; then
+    echo "Error: --bare <path> is required" >&2
+    exit 1
+  fi
+
+  # Expand to absolute path
+  bare="$(cd "$(dirname "$bare")" && pwd)/$(basename "$bare")"
+
+  # Infer worktrees directory if not specified
+  if [ -z "$worktrees" ]; then
+    local parent
+    parent="$(dirname "$bare")"
+    worktrees="$parent/${name}-worktrees"
+  fi
+  worktrees="$(cd "$(dirname "$worktrees")" 2>/dev/null && pwd)/$(basename "$worktrees")" 2>/dev/null || worktrees="$worktrees"
+
+  # Infer GitHub repo from remote if not specified
+  if [ -z "$repo" ]; then
+    local remote_url
+    remote_url=$(git -C "$bare" remote get-url origin 2>/dev/null || true)
+    if [ -n "$remote_url" ]; then
+      repo=$(echo "$remote_url" | sed -E 's#.*github\.com[:/]##; s/\.git$//')
+      echo "Detected GitHub repo: $repo" >&2
+    fi
+  fi
+
+  mkdir -p "$CONFIG_DIR"
+
+  local conf="$CONFIG_DIR/$name.conf"
+  {
+    echo "BARE=\"$bare\""
+    echo "WORKTREES=\"$worktrees\""
+    [ -n "$repo" ] && echo "REPO=\"$repo\""
+    [ -n "$workspace" ] && echo "WORKSPACE=\"$workspace\""
+    [ -n "$shared" ] && echo "SHARED=\"$shared\""
+    [ -n "$default_branch" ] && echo "DEFAULT_BRANCH=\"$default_branch\""
+  } > "$conf"
+
+  echo "Created config: $conf" >&2
+  echo "" >&2
+  cat "$conf" >&2
+}
+
+cmd_repos() {
+  for conf in "$CONFIG_DIR"/*.conf; do
+    [ -f "$conf" ] || continue
+    local name
+    name=$(basename "$conf" .conf)
+    (
+      source "$conf"
+      echo -e "\033[1;33m$name\033[0m"
+      echo "  bare: $BARE"
+      echo "  worktrees: $WORKTREES"
+      [ -n "${REPO:-}" ] && echo "  repo: $REPO"
+    )
+  done
+}
+
+# --- completions (used by _wt) ---
+
+cmd_completions() {
+  case "${1:-}" in
+    branches)
+      git -C "$BARE" for-each-ref --format='%(refname:short)' refs/heads refs/remotes/origin 2>/dev/null \
+        | sed 's|^origin/||' | sort -u
+      ;;
+    worktrees)
+      git -C "$BARE" worktree list --porcelain 2>/dev/null \
+        | sed -n 's/^branch refs\/heads\///p'
+      ;;
+    repos)
+      for conf in "$CONFIG_DIR"/*.conf; do
+        [ -f "$conf" ] || continue
+        basename "$conf" .conf
+      done
+      ;;
+  esac
+}
+
+cmd_help() {
+  echo "wt - Git worktree manager with GitHub integration"
+  echo ""
+  echo "Usage:"
+  echo "  wt <branch> [base]      Create worktree (shorthand for 'wt add')"
+  echo "  wt add <branch> [base]  Create worktree from base ref"
+  echo "  wt list                 List all worktrees with PR/CI status"
+  echo "  wt rm <branch>          Remove a worktree"
+  echo "  wt prune                Remove all worktrees with merged PRs"
+  echo "  wt repos                List configured repositories"
+  echo "  wt init <name> [opts]   Configure a new repository"
+  echo ""
+  echo "Options:"
+  echo "  --repo <name>           Use a specific configured repo"
+  echo ""
+  echo "Init options:"
+  echo "  --bare <path>           Path to bare repo (required)"
+  echo "  --worktrees <path>      Worktree directory (default: <bare-parent>/<name>-worktrees)"
+  echo "  --repo <owner/repo>     GitHub repo slug (auto-detected from remote)"
+  echo "  --workspace <path>      VS Code .code-workspace file to keep in sync"
+  echo "  --shared <path>         Directory of files to copy into new worktrees"
+  echo "  --default-branch <b>    Default branch name (default: main)"
+  echo ""
+  echo "Examples:"
+  echo "  wt init myproject --bare ~/code/myproject.git"
+  echo "  wt my-feature                     Create branch off origin/main"
+  echo "  wt my-feature origin/dev          Create branch off origin/dev"
+  echo "  wt list                           Show worktrees with CI/review status"
+  echo "  wt prune                          Clean up merged worktrees"
+}
+
+# --- main ---
+
+# Parse global flags
+if [[ "${1:-}" == "--repo" ]]; then
+  WT_REPO="$2"
+  shift 2
+fi
+
+case "${1:-}" in
+  ""|-h|--help)
+    cmd_help
+    exit 0
+    ;;
+  init)
+    shift
+    cmd_init "$@"
+    exit 0
+    ;;
+  repos)
+    cmd_repos
+    exit 0
+    ;;
+  __complete)
+    resolve_repo
+    cmd_completions "$2"
+    exit 0
+    ;;
+  list|-l)
+    resolve_repo
+    cmd_list
+    ;;
+  rm|-r)
+    resolve_repo
+    cmd_rm "$2"
+    ;;
+  prune)
+    resolve_repo
+    cmd_prune
+    ;;
+  add)
+    resolve_repo
+    cmd_add "$2" "$3"
+    ;;
+  *)
+    resolve_repo
+    cmd_add "$1" "$2"
+    ;;
+esac

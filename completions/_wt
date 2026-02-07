@@ -1,0 +1,74 @@
+#compdef wt
+
+# Zsh completion for wt - git worktree manager
+#
+# Installed automatically by Homebrew, or manually:
+#   fpath=("$(brew --prefix)/share/zsh/site-functions" $fpath)
+
+_wt() {
+  local -a subcmds
+  subcmds=(
+    'list:List all worktrees with details'
+    'rm:Remove a worktree'
+    'add:Create a worktree'
+    'prune:Remove merged worktrees'
+    'repos:List configured repositories'
+    'init:Configure a new repository'
+  )
+
+  # Handle --repo <name> as first arg
+  if [[ "$words[2]" == "--repo" ]]; then
+    if (( CURRENT == 3 )); then
+      local -a repos
+      repos=(${(f)"$(command wt __complete repos 2>/dev/null)"})
+      _describe 'repo' repos
+      return
+    fi
+    # Shift context: after --repo <name>, complete like normal position 2
+    if (( CURRENT == 4 )); then
+      _describe 'subcommand' subcmds
+      local -a branches
+      branches=(${(f)"$(command wt --repo "$words[3]" __complete branches 2>/dev/null)"})
+      _describe 'branch' branches
+      return
+    fi
+    if (( CURRENT == 5 )); then
+      if [[ "$words[4]" == (rm|-r) ]]; then
+        local -a wts
+        wts=(${(f)"$(command wt --repo "$words[3]" __complete worktrees 2>/dev/null)"})
+        _describe 'worktree branch' wts
+      elif [[ "$words[4]" == add ]]; then
+        local -a branches
+        branches=(${(f)"$(command wt --repo "$words[3]" __complete branches 2>/dev/null)"})
+        _describe 'branch' branches
+      fi
+      return
+    fi
+    return
+  fi
+
+  if (( CURRENT == 2 )); then
+    _describe 'subcommand' subcmds
+    local -a branches
+    branches=(${(f)"$(command wt __complete branches 2>/dev/null)"})
+    _describe 'branch' branches
+  elif [[ "$words[2]" == (rm|-r) ]]; then
+    local -a wts
+    wts=(${(f)"$(command wt __complete worktrees 2>/dev/null)"})
+    _describe 'worktree branch' wts
+  elif [[ "$words[2]" == add ]]; then
+    local -a branches
+    branches=(${(f)"$(command wt __complete branches 2>/dev/null)"})
+    _describe 'branch' branches
+  elif [[ "$words[2]" == init ]]; then
+    if (( CURRENT == 3 )); then
+      _message 'repo name'
+    else
+      local -a opts
+      opts=('--bare:Path to bare repo' '--worktrees:Worktree directory' '--repo:GitHub owner/repo' '--workspace:VS Code workspace file' '--shared:Shared files directory' '--default-branch:Default branch name')
+      _describe 'option' opts
+    fi
+  fi
+}
+
+_wt "$@"
