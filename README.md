@@ -157,3 +157,13 @@ This gives you:
     feature-auth/             # worktree for feature-auth
     fix-login-bug/            # worktree for fix-login-bug
 ```
+
+## Releasing a new version
+
+Run the release script:
+
+```bash
+./release.sh 0.2.0
+```
+
+This tags the release, computes the tarball SHA, updates the Homebrew formula, and pushes everything. Users then run `brew upgrade wt`.
