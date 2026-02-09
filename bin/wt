@@ -44,17 +44,24 @@ resolve_repo() {
 
 # --- workspace helpers (no-op when WORKSPACE is unset) ---
 
+# VS Code workspace files use JSONC (trailing commas, comments).
+# jq only accepts strict JSON, so we strip trailing commas first.
+# Note: comments in the workspace file will be lost after modification.
+workspace_read() {
+  sed 's/,\([[:space:]]*[]}]\)/\1/g' "$WORKSPACE"
+}
+
 workspace_add() {
   [ -n "${WORKSPACE:-}" ] && [ -f "$WORKSPACE" ] || return 0
   local wt_path="$1"
-  jq --arg p "$wt_path" '.folders = [{"path": $p}] + .folders' "$WORKSPACE" > "$WORKSPACE.tmp" \
+  workspace_read | jq --arg p "$wt_path" '.folders = [{"path": $p}] + .folders' > "$WORKSPACE.tmp" \
     && mv "$WORKSPACE.tmp" "$WORKSPACE"
 }
 
 workspace_remove() {
   [ -n "${WORKSPACE:-}" ] && [ -f "$WORKSPACE" ] || return 0
   local wt_path="$1"
-  jq --arg p "$wt_path" '.folders = [.folders[] | select(.path != $p)]' "$WORKSPACE" > "$WORKSPACE.tmp" \
+  workspace_read | jq --arg p "$wt_path" '.folders = [.folders[] | select(.path != $p)]' > "$WORKSPACE.tmp" \
     && mv "$WORKSPACE.tmp" "$WORKSPACE"
 }
 

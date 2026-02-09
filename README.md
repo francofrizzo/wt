@@ -9,6 +9,7 @@ Git worktree manager with GitHub integration. Shows CI status, PR review state, 
 - **Prune** worktrees whose PRs have been merged
 - **Multi-repo** support via simple config files
 - **VS Code workspace** sync (optional) — auto-adds/removes worktrees
+  > **Note:** VS Code uses JSONC (JSON with comments/trailing commas) for workspace files. When `wt` modifies the file, it converts it to strict JSON — any comments in the file will be lost.
 - **Shared files** — copy common untracked files into new worktrees
 - **Zsh integration** — cd wrapper and tab completion
 
