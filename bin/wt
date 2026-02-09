@@ -48,7 +48,7 @@ resolve_repo() {
 # jq only accepts strict JSON, so we strip trailing commas first.
 # Note: comments in the workspace file will be lost after modification.
 workspace_read() {
-  sed 's/,\([[:space:]]*[]}]\)/\1/g' "$WORKSPACE"
+  perl -0777 -pe 's/,(\s*[\]}])/$1/g' "$WORKSPACE"
 }
 
 workspace_add() {
