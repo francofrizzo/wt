@@ -9,9 +9,13 @@ _wt() {
   local -a subcmds
   subcmds=(
     'list:List all worktrees with details'
+    'ls:List all worktrees (alias for list)'
     'rm:Remove a worktree'
+    'remove:Remove a worktree (alias for rm)'
     'add:Create a worktree'
+    'new:Create a worktree (alias for add)'
     'prune:Remove merged worktrees'
+    'clean:Remove merged worktrees (alias for prune)'
     'repos:List configured repositories'
     'init:Configure a new repository'
   )
@@ -33,11 +37,11 @@ _wt() {
       return
     fi
     if (( CURRENT == 5 )); then
-      if [[ "$words[4]" == (rm|-r) ]]; then
+      if [[ "$words[4]" == (rm|remove|-r) ]]; then
         local -a wts
         wts=(${(f)"$(command wt --repo "$words[3]" __complete worktrees 2>/dev/null)"})
         _describe 'worktree branch' wts
-      elif [[ "$words[4]" == add ]]; then
+      elif [[ "$words[4]" == (add|new) ]]; then
         local -a branches
         branches=(${(f)"$(command wt --repo "$words[3]" __complete branches 2>/dev/null)"})
         _describe 'branch' branches
@@ -52,11 +56,11 @@ _wt() {
     local -a branches
     branches=(${(f)"$(command wt __complete branches 2>/dev/null)"})
     _describe 'branch' branches
-  elif [[ "$words[2]" == (rm|-r) ]]; then
+  elif [[ "$words[2]" == (rm|remove|-r) ]]; then
     local -a wts
     wts=(${(f)"$(command wt __complete worktrees 2>/dev/null)"})
     _describe 'worktree branch' wts
-  elif [[ "$words[2]" == add ]]; then
+  elif [[ "$words[2]" == (add|new) ]]; then
     local -a branches
     branches=(${(f)"$(command wt __complete branches 2>/dev/null)"})
     _describe 'branch' branches

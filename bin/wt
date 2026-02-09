@@ -194,13 +194,18 @@ cmd_add() {
 }
 
 cmd_rm() {
+  local force=""
+  if [ "$1" = "--force" ] || [ "$1" = "-f" ]; then
+    force="--force"
+    shift
+  fi
   local branch="$1"
   if [ -z "$branch" ]; then
-    echo "Usage: wt rm <branch>" >&2
+    echo "Usage: wt rm [-f|--force] <branch>" >&2
     exit 1
   fi
   local dir="${branch//\//-}"
-  git -C "$BARE" worktree remove "$WORKTREES/$dir" >&2
+  git -C "$BARE" worktree remove $force "$WORKTREES/$dir" >&2
   workspace_remove "$WORKTREES/$dir"
   echo "Removed: $WORKTREES/$dir" >&2
 }
@@ -447,15 +452,15 @@ cmd_help() {
   echo "wt - Git worktree manager with GitHub integration"
   echo ""
   echo "Usage:"
-  echo "  wt <branch> [base]      Create worktree (shorthand for 'wt add')"
-  echo "  wt add <branch> [base]  Create worktree from base ref"
-  echo "  wt list                 List all worktrees with PR/CI status"
-  echo "  wt rm <branch>          Remove a worktree"
-  echo "  wt prune                Remove all worktrees with merged PRs"
-  echo "  wt repos                List configured repositories"
-  echo "  wt init <url>           Clone a repo and configure it"
-  echo "  wt init                 Auto-detect repo from current directory"
-  echo "  wt init <name> --bare   Explicit configuration"
+  echo "  wt <branch> [base]           Create worktree (shorthand for 'wt add')"
+  echo "  wt add|new <branch> [base]   Create worktree from base ref"
+  echo "  wt list|ls                   List all worktrees with PR/CI status"
+  echo "  wt rm|remove [-f] <branch>   Remove a worktree (-f/--force to force)"
+  echo "  wt prune|clean               Remove all worktrees with merged PRs"
+  echo "  wt repos                     List configured repositories"
+  echo "  wt init <url>                Clone a repo and configure it"
+  echo "  wt init                      Auto-detect repo from current directory"
+  echo "  wt init <name> --bare        Explicit configuration"
   echo ""
   echo "Options:"
   echo "  --repo <name>           Use a specific configured repo"
@@ -496,19 +501,20 @@ case "${1:-}" in
     cmd_completions "$2"
     exit 0
     ;;
-  list|-l)
+  list|ls|-l)
     resolve_repo
     cmd_list
     ;;
-  rm|-r)
+  rm|remove|-r)
     resolve_repo
-    cmd_rm "$2"
+    shift
+    cmd_rm "$@"
     ;;
-  prune)
+  prune|clean)
     resolve_repo
     cmd_prune
     ;;
-  add)
+  add|new)
     resolve_repo
     cmd_add "$2" "$3"
     ;;

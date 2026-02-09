@@ -9,14 +9,14 @@
 
 wt() {
   case "$1" in
-    ""|-h|--help|-l|-r|list|rm|prune|repos|init|__complete)
+    ""|-h|--help|-l|-r|list|ls|rm|remove|prune|clean|repos|init|__complete)
       command wt "$@"
       return
       ;;
     --repo)
       # --repo <name> <subcommand> ... — check the subcommand
       case "$3" in
-        ""|-h|--help|-l|-r|list|rm|prune|repos|init|__complete)
+        ""|-h|--help|-l|-r|list|ls|rm|remove|prune|clean|repos|init|__complete)
           command wt "$@"
           return
           ;;
