@@ -158,6 +158,20 @@ cmd_list() {
   done < <(git -C "$BARE" worktree list --porcelain | awk '/^worktree /{wt=$2} /^branch /{print wt, $2}')
 }
 
+_symlink_shared() {
+  local src="$1" dest="$2"
+  for entry in "$src"/* "$src"/.*; do
+    case "$(basename "$entry")" in .|..) continue ;; esac
+    [ -e "$entry" ] || continue
+    if [ -d "$entry" ]; then
+      mkdir -p "$dest/$(basename "$entry")"
+      _symlink_shared "$entry" "$dest/$(basename "$entry")"
+    else
+      ln -sf "$entry" "$dest/$(basename "$entry")"
+    fi
+  done
+}
+
 cmd_add() {
   local no_symlink=false
   local positional=()
@@ -197,15 +211,8 @@ cmd_add() {
     if [ "$no_symlink" = true ]; then
       cp -r "$SHARED"/. "$WORKTREES/$dir"/
     else
-      for entry in "$SHARED"/*; do
-        [ -e "$entry" ] || continue
-        ln -sf "$entry" "$WORKTREES/$dir/$(basename "$entry")"
-      done
-      for entry in "$SHARED"/.*; do
-        case "$(basename "$entry")" in .|..) continue ;; esac
-        [ -e "$entry" ] || continue
-        ln -sf "$entry" "$WORKTREES/$dir/$(basename "$entry")"
-      done
+      # Symlink leaf files only; directories express target paths, not symlink targets
+      _symlink_shared "$SHARED" "$WORKTREES/$dir"
     fi
   fi
 
