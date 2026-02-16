@@ -64,6 +64,9 @@ _wt() {
     local -a branches
     branches=(${(f)"$(command wt __complete branches 2>/dev/null)"})
     _describe 'branch' branches
+    local -a opts
+    opts=('--no-symlink:Copy shared files instead of symlinking')
+    _describe 'option' opts
   elif [[ "$words[2]" == init ]]; then
     if (( CURRENT == 3 )); then
       _message 'repo name'

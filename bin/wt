@@ -159,12 +159,21 @@ cmd_list() {
 }
 
 cmd_add() {
-  local branch="$1"
-  local base="${2:-origin/${DEFAULT_BRANCH:-main}}"
+  local no_symlink=false
+  local positional=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --no-symlink) no_symlink=true; shift ;;
+      *) positional+=("$1"); shift ;;
+    esac
+  done
+
+  local branch="${positional[0]:-}"
+  local base="${positional[1]:-origin/${DEFAULT_BRANCH:-main}}"
   local dir="${branch//\//-}"
 
   if [ -z "$branch" ]; then
-    echo "Usage: wt add <branch> [base]" >&2
+    echo "Usage: wt add <branch> [base] [--no-symlink]" >&2
     exit 1
   fi
 
@@ -185,7 +194,19 @@ cmd_add() {
   fi
 
   if [ -d "${SHARED:-}" ]; then
-    cp -r "$SHARED"/. "$WORKTREES/$dir"/
+    if [ "$no_symlink" = true ]; then
+      cp -r "$SHARED"/. "$WORKTREES/$dir"/
+    else
+      for entry in "$SHARED"/*; do
+        [ -e "$entry" ] || continue
+        ln -sf "$entry" "$WORKTREES/$dir/$(basename "$entry")"
+      done
+      for entry in "$SHARED"/.*; do
+        case "$(basename "$entry")" in .|..) continue ;; esac
+        [ -e "$entry" ] || continue
+        ln -sf "$entry" "$WORKTREES/$dir/$(basename "$entry")"
+      done
+    fi
   fi
 
   workspace_add "$WORKTREES/$dir"
@@ -452,8 +473,9 @@ cmd_help() {
   echo "wt - Git worktree manager with GitHub integration"
   echo ""
   echo "Usage:"
-  echo "  wt <branch> [base]           Create worktree (shorthand for 'wt add')"
-  echo "  wt add|new <branch> [base]   Create worktree from base ref"
+  echo "  wt <branch> [base]                  Create worktree (shorthand for 'wt add')"
+  echo "  wt add|new <branch> [base]           Create worktree from base ref"
+  echo "      --no-symlink                     Copy shared files instead of symlinking"
   echo "  wt list|ls                   List all worktrees with PR/CI status"
   echo "  wt rm|remove [-f] <branch>   Remove a worktree (-f/--force to force)"
   echo "  wt prune|clean               Remove all worktrees with merged PRs"
@@ -516,10 +538,11 @@ case "${1:-}" in
     ;;
   add|new)
     resolve_repo
-    cmd_add "$2" "$3"
+    shift
+    cmd_add "$@"
     ;;
   *)
     resolve_repo
-    cmd_add "$1" "$2"
+    cmd_add "$@"
     ;;
 esac

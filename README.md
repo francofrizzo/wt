@@ -10,7 +10,7 @@ Git worktree manager with GitHub integration. Shows CI status, PR review state, 
 - **Multi-repo** support via simple config files
 - **VS Code workspace** sync (optional) — auto-adds/removes worktrees
   > **Note:** VS Code uses JSONC (JSON with comments/trailing commas) for workspace files. When `wt` modifies the file, it converts it to strict JSON — any comments in the file will be lost.
-- **Shared files** — copy common untracked files into new worktrees
+- **Shared files** — symlink common untracked files into new worktrees (changes sync across all worktrees)
 - **Zsh integration** — cd wrapper and tab completion
 
 ## Install
@@ -63,7 +63,7 @@ All three modes accept these optional flags:
 | `--worktrees` | Directory for worktrees | `<bare-parent>/<name>-worktrees` |
 | `--repo` | GitHub `owner/repo` slug | auto-detected from remote |
 | `--workspace` | VS Code `.code-workspace` file | none |
-| `--shared` | Directory copied into new worktrees | none |
+| `--shared` | Directory symlinked into new worktrees | none |
 | `--default-branch` | Default branch name | auto-detected from remote HEAD |
 
 ### Config format
@@ -82,9 +82,10 @@ DEFAULT_BRANCH="main"
 ### Create a worktree
 
 ```bash
-wt my-feature              # new branch off origin/main
-wt my-feature origin/dev   # new branch off origin/dev
-wt add my-feature          # explicit add subcommand
+wt my-feature                    # new branch off origin/main
+wt my-feature origin/dev         # new branch off origin/dev
+wt add my-feature                # explicit add subcommand
+wt add my-feature --no-symlink   # copy shared files instead of symlinking
 ```
 
 If the branch exists locally or on the remote, it checks it out. Otherwise, it creates a new branch from the base ref.
