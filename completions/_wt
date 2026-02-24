@@ -16,6 +16,7 @@ _wt() {
     'new:Create a worktree (alias for add)'
     'prune:Remove merged worktrees'
     'clean:Remove merged worktrees (alias for prune)'
+    'fork:Fork current worktree into a new branch'
     'repos:List configured repositories'
     'init:Configure a new repository'
   )
@@ -45,6 +46,8 @@ _wt() {
         local -a branches
         branches=(${(f)"$(command wt --repo "$words[3]" __complete branches 2>/dev/null)"})
         _describe 'branch' branches
+      elif [[ "$words[4]" == fork ]]; then
+        _message 'new branch name'
       fi
       return
     fi
@@ -67,6 +70,14 @@ _wt() {
     local -a opts
     opts=('--no-symlink:Copy shared files instead of symlinking')
     _describe 'option' opts
+  elif [[ "$words[2]" == fork ]]; then
+    if (( CURRENT == 3 )); then
+      _message 'new branch name'
+    else
+      local -a opts
+      opts=('--no-symlink:Copy shared files instead of symlinking')
+      _describe 'option' opts
+    fi
   elif [[ "$words[2]" == init ]]; then
     if (( CURRENT == 3 )); then
       _message 'repo name'
