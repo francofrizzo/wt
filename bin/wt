@@ -121,6 +121,29 @@ cmd_list() {
     local created
     created=$(stat -f '%SB' -t '%Y-%m-%d' "$wt_path" 2>/dev/null || echo "?")
 
+    # Check if worktree has local changes
+    local wt_porcelain local_line=""
+    wt_porcelain=$(git -C "$wt_path" status --porcelain 2>/dev/null || true)
+    if [ -n "$wt_porcelain" ]; then
+      local n_changed n_untracked parts=""
+      n_changed=$(echo "$wt_porcelain" | grep -cv '^??' || true)
+      n_untracked=$(echo "$wt_porcelain" | grep -c '^??' || true)
+      [ "$n_changed" -gt 0 ] && parts="${n_changed} changed"
+      if [ "$n_untracked" -gt 0 ]; then
+        [ -n "$parts" ] && parts="$parts, "
+        parts="${parts}${n_untracked} untracked"
+      fi
+      local_line="$parts"
+    fi
+
+    # Check if branch has unique commits vs default branch
+    local equal_default=""
+    if [ "$branch" != "${DEFAULT_BRANCH:-main}" ]; then
+      if git -C "$BARE" merge-base --is-ancestor "$branch" "origin/${DEFAULT_BRANCH:-main}" 2>/dev/null; then
+        equal_default=true
+      fi
+    fi
+
     local gh_line="" name_color="1;33"
     if [ "$branch" = "${DEFAULT_BRANCH:-main}" ]; then
       name_color="1;34"
@@ -144,6 +167,10 @@ cmd_list() {
       fi
     fi
 
+    if [ -n "$equal_default" ] && [ "$name_color" = "1;33" ]; then
+      name_color="2;37"
+    fi
+
     if [ "$first" = true ]; then
       first=false
     else
@@ -152,6 +179,12 @@ cmd_list() {
 
     echo -e "\033[${name_color}m$dir_name\033[0m  ($branch)  created $created"
     echo "  commit: $last_commit"
+    if [ -n "$local_line" ]; then
+      echo -e "  local: \033[33m$local_line\033[0m"
+    fi
+    if [ -n "$equal_default" ]; then
+      echo -e "  \033[2;37m= ${DEFAULT_BRANCH:-main} (no unique commits)\033[0m"
+    fi
     if [ -n "$gh_line" ]; then
       echo -e "  $gh_line"
     fi
@@ -307,7 +340,11 @@ cmd_prune() {
   local merged_prs
   merged_prs=$(gh pr list --repo "$REPO" --state merged --limit 50 --json headRefName,number 2>/dev/null || echo "[]")
 
+  echo "Fetching origin..." >&2
+  git -C "$BARE" fetch origin >&2
+
   local to_remove=()
+  local dirty_skipped=()
   while IFS= read -r line; do
     local wt_path branch_ref
     wt_path=$(echo "$line" | cut -d' ' -f1)
@@ -318,24 +355,52 @@ cmd_prune() {
     local branch="${branch_ref#refs/heads/}"
     [ "$branch" = "${DEFAULT_BRANCH:-main}" ] && continue
 
+    local reason=""
     local pr_number
     pr_number=$(echo "$merged_prs" | jq -r --arg b "$branch" '[.[] | select(.headRefName == $b)] | first | .number // empty' 2>/dev/null)
 
     if [ -n "$pr_number" ]; then
-      to_remove+=("$wt_path|$branch|$pr_number")
+      reason="merged PR #$pr_number"
+    elif git -C "$BARE" merge-base --is-ancestor "$branch" "origin/${DEFAULT_BRANCH:-main}" 2>/dev/null; then
+      local wt_porcelain
+      wt_porcelain=$(git -C "$wt_path" status --porcelain 2>/dev/null || true)
+      if [ -n "$wt_porcelain" ]; then
+        dirty_skipped+=("$wt_path|$branch")
+        continue
+      fi
+      reason="= ${DEFAULT_BRANCH:-main}"
+    fi
+
+    if [ -n "$reason" ]; then
+      to_remove+=("$wt_path|$branch|$reason")
     fi
   done < <(git -C "$BARE" worktree list --porcelain | awk '/^worktree /{wt=$2} /^branch /{print wt, $2}')
 
-  if [ ${#to_remove[@]} -eq 0 ]; then
-    echo "No merged worktrees to remove."
+  if [ ${#to_remove[@]} -eq 0 ] && [ ${#dirty_skipped[@]} -eq 0 ]; then
+    echo "No worktrees to clean up."
     return 0
   fi
 
-  echo "Will remove ${#to_remove[@]} merged worktree(s):"
+  if [ ${#dirty_skipped[@]} -gt 0 ]; then
+    echo "Skipping ${#dirty_skipped[@]} worktree(s) with local changes (= ${DEFAULT_BRANCH:-main} but dirty):"
+    for entry in "${dirty_skipped[@]}"; do
+      local wt_path branch
+      IFS='|' read -r wt_path branch <<< "$entry"
+      echo -e "  \033[33m$(basename "$wt_path")\033[0m  ($branch)"
+    done
+    echo ""
+  fi
+
+  if [ ${#to_remove[@]} -eq 0 ]; then
+    echo "No clean worktrees to remove."
+    return 0
+  fi
+
+  echo "Will remove ${#to_remove[@]} worktree(s):"
   for entry in "${to_remove[@]}"; do
-    local wt_path branch pr_number
-    IFS='|' read -r wt_path branch pr_number <<< "$entry"
-    echo -e "  \033[2;37m$(basename "$wt_path")\033[0m  ($branch)  PR #$pr_number"
+    local wt_path branch reason
+    IFS='|' read -r wt_path branch reason <<< "$entry"
+    echo -e "  \033[2;37m$(basename "$wt_path")\033[0m  ($branch)  $reason"
   done
 
   echo ""
@@ -347,8 +412,8 @@ cmd_prune() {
   fi
 
   for entry in "${to_remove[@]}"; do
-    local wt_path branch pr_number
-    IFS='|' read -r wt_path branch pr_number <<< "$entry"
+    local wt_path branch reason
+    IFS='|' read -r wt_path branch reason <<< "$entry"
     git -C "$BARE" worktree remove "$wt_path" 2>&1 && workspace_remove "$wt_path"
     echo "Removed: $(basename "$wt_path")"
   done
