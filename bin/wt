@@ -428,6 +428,7 @@ cmd_prune() {
 
     local branch="${branch_ref#refs/heads/}"
     [ "$branch" = "${DEFAULT_BRANCH:-main}" ] && continue
+    [ "$branch" = "main" ] && continue
 
     local reason=""
     local pr_number
@@ -500,7 +501,7 @@ cmd_prune() {
     IFS='|' read -r wt_path branch reason <<< "$entry"
     git -C "$BARE" worktree remove "$wt_path" 2>&1 && workspace_remove "$wt_path"
     # Clean up the local branch (safe delete only)
-    if [ "$branch" != "${DEFAULT_BRANCH:-main}" ]; then
+    if [ "$branch" != "${DEFAULT_BRANCH:-main}" ] && [ "$branch" != "main" ]; then
       git -C "$BARE" branch -d "$branch" 2>/dev/null || true
     fi
     echo "Removed: $(basename "$wt_path")"

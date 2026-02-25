@@ -61,6 +61,28 @@ setup() {
   assert [ -d "$TEST_WORKTREES/abort-prune" ]
 }
 
+@test "never prunes main worktree even when DEFAULT_BRANCH differs" {
+  # Override DEFAULT_BRANCH to something other than main
+  local config_dir="$XDG_CONFIG_HOME/wt/repos"
+  cat > "$config_dir/test-repo.conf" <<EOF
+BARE="$TEST_BARE"
+WORKTREES="$TEST_WORKTREES"
+REPO="test-owner/test-repo"
+DEFAULT_BRANCH="develop"
+EOF
+
+  # Create a develop branch and a main worktree
+  git -C "$TEST_BARE" branch develop main 2>/dev/null
+  git -C "$TEST_BARE" fetch origin 2>/dev/null
+  git -C "$TEST_BARE" worktree add "$TEST_WORKTREES/main" main 2>/dev/null
+
+  run_wt prune --dry-run
+
+  assert_success
+  refute_output --partial "main"
+  assert [ -d "$TEST_WORKTREES/main" ]
+}
+
 @test "--dry-run shows list without deleting" {
   create_test_worktree "dryrun-prune"
 
