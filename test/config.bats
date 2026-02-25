@@ -105,6 +105,32 @@ EOF
   assert_equal "$WORKTREES" "/path/to/worktrees"
 }
 
+@test "\$HOME expanded in values" {
+  local conf="$BATS_TEST_TMPDIR/home.conf"
+  cat > "$conf" <<'EOF'
+BARE="$HOME/repos/bare"
+WORKTREES="$HOME/repos/worktrees"
+EOF
+
+  BARE="" WORKTREES=""
+  _load_config "$conf"
+
+  assert_equal "$BARE" "$HOME/repos/bare"
+  assert_equal "$WORKTREES" "$HOME/repos/worktrees"
+}
+
+@test "~ expanded in values" {
+  local conf="$BATS_TEST_TMPDIR/tilde.conf"
+  cat > "$conf" <<'EOF'
+BARE="~/repos/bare"
+EOF
+
+  BARE=""
+  _load_config "$conf"
+
+  assert_equal "$BARE" "$HOME/repos/bare"
+}
+
 @test "values with spaces (quoted) parsed correctly" {
   local conf="$BATS_TEST_TMPDIR/spaces.conf"
   cat > "$conf" <<'EOF'
