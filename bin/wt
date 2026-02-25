@@ -33,6 +33,9 @@ _load_config() {
       if [[ "$value" =~ ^\"(.*)\"$ ]] || [[ "$value" =~ ^\'(.*)\'$ ]]; then
         value="${BASH_REMATCH[1]}"
       fi
+      # Expand $HOME and ~ in values
+      value="${value//\$HOME/$HOME}"
+      value="${value/#\~/$HOME}"
       eval "$key=\"\$value\""
     fi
   done < "$file"
@@ -390,10 +393,6 @@ cmd_cd() {
   if [ -z "$branch" ]; then
     echo "Usage: wt cd <branch>" >&2
     exit 1
-  fi
-  if [ "$branch" = "${DEFAULT_BRANCH:-main}" ]; then
-    echo "$BARE"
-    return
   fi
   local dir="${branch//\//-}"
   if [ ! -d "$WORKTREES/$dir" ]; then
