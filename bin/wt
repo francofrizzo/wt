@@ -391,6 +391,10 @@ cmd_cd() {
     echo "Usage: wt cd <branch>" >&2
     exit 1
   fi
+  if [ "$branch" = "${DEFAULT_BRANCH:-main}" ]; then
+    echo "$BARE"
+    return
+  fi
   local dir="${branch//\//-}"
   if [ ! -d "$WORKTREES/$dir" ]; then
     echo "Worktree not found: $WORKTREES/$dir" >&2
