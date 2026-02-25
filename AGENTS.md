@@ -41,14 +41,17 @@ Pure Bash (`set -e`). No build step, no package manager.
 
 ## Testing
 
-No automated tests. Validate changes manually:
+Uses [BATS](https://bats-core.readthedocs.io/) (Bash Automated Testing System). Tests live in `test/`.
 
 ```bash
-# Run directly from the repo
-./bin/wt list
-./bin/wt <branch-name>
-./bin/wt rm <branch-name>
+bats test/              # run all tests
+bats test/config.bats   # run a specific test file
+bats test/ --filter "strips trailing commas"  # run by name
 ```
+
+Helper libraries (bats-assert, bats-support) are git submodules in `test/lib/`. After cloning, run `git submodule update --init`.
+
+Each test gets an isolated environment with a fresh bare repo, config, and mock `gh` — no network access needed.
 
 ## Releasing
 

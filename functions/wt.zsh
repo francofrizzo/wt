@@ -26,5 +26,5 @@ wt() {
 
   local dir
   dir=$(command wt "$@") || return
-  cd "$dir"
+  [ -d "$dir" ] && cd "$dir" || echo "$dir"
 }

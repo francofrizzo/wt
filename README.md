@@ -28,11 +28,17 @@ git clone https://github.com/francofrizzo/wt.git
 ln -s "$PWD/wt/bin/wt" /usr/local/bin/wt
 ```
 
+### Requirements
+
+- macOS with zsh (target platform)
+- Bash 3.2+ (ships with macOS)
+
 ### Dependencies
 
 - [git](https://git-scm.com/)
 - [gh](https://cli.github.com/) — GitHub CLI (for PR/CI status)
 - [jq](https://jqlang.github.io/jq/) — JSON processor
+- [perl](https://www.perl.org/) — JSONC processing (ships with macOS)
 
 ## Setup
 
@@ -108,19 +114,38 @@ Output shows each worktree with:
 - PR number with CI status (pass/fail/running) and review state (approved/changes/pending)
 - Merged PRs shown dimmed
 
+### Jump to an existing worktree
+
+```bash
+wt cd my-feature
+```
+
+### Fork current worktree
+
+```bash
+wt fork new-branch              # fork current branch into new-branch
+wt fork new-branch --no-symlink # copy shared files instead of symlinking
+```
+
+Creates a new worktree branching from the current one. If you have uncommitted changes (staged, unstaged, or untracked), they are moved to the new worktree automatically.
+
 ### Remove a worktree
 
 ```bash
 wt rm my-feature
+wt rm -f my-feature    # force remove (even if dirty)
 ```
+
+Also cleans up the local branch if it has been fully merged.
 
 ### Prune merged worktrees
 
 ```bash
-wt prune
+wt prune               # interactive — prompts before removing
+wt prune --dry-run     # preview what would be removed
 ```
 
-Finds all worktrees whose PRs have been merged on GitHub and removes them (with confirmation).
+Finds all worktrees whose PRs have been merged on GitHub (or have no unique commits vs the default branch) and removes them.
 
 ### List configured repos
 
@@ -152,6 +177,8 @@ This gives you:
 ## How it works
 
 `wt` operates on [bare git repositories](https://git-scm.com/docs/git-worktree). Instead of cloning a repo normally, you clone it bare and create worktrees for each branch you work on. This lets you have multiple branches checked out simultaneously without stashing or switching.
+
+**Why bare repos?** A normal clone has a single working tree tied to `.git`. Worktrees created from it share that `.git` directory, which can cause issues with IDE indexing, build caches, and lock files. A bare repo has no working tree of its own — every branch gets its own independent directory, cleanly isolated from each other.
 
 ```
 ~/code/

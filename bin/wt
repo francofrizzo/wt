@@ -1,7 +1,42 @@
 #!/bin/bash
-set -e
+set -eo pipefail
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/wt/repos"
+
+# --- dependency check ---
+
+_check_deps() {
+  local missing=()
+  for cmd in git gh jq perl; do
+    command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+  done
+  if [ ${#missing[@]} -gt 0 ]; then
+    echo "Missing required dependencies: ${missing[*]}" >&2
+    echo "Install them and try again." >&2
+    exit 1
+  fi
+}
+
+# --- safe config loader ---
+
+_load_config() {
+  local file="$1"
+  local key value
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Skip empty lines and comments
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    # Match KEY="value" or KEY=value (only allowed keys)
+    if [[ "$line" =~ ^(BARE|WORKTREES|REPO|WORKSPACE|SHARED|DEFAULT_BRANCH)=(.*) ]]; then
+      key="${BASH_REMATCH[1]}"
+      value="${BASH_REMATCH[2]}"
+      # Strip surrounding quotes (single or double)
+      if [[ "$value" =~ ^\"(.*)\"$ ]] || [[ "$value" =~ ^\'(.*)\'$ ]]; then
+        value="${BASH_REMATCH[1]}"
+      fi
+      eval "$key=\"\$value\""
+    fi
+  done < "$file"
+}
 
 # --- config resolution ---
 
@@ -12,24 +47,24 @@ resolve_repo() {
       echo "Unknown repo: $WT_REPO (no config at $conf)" >&2
       exit 1
     fi
-    source "$conf"
+    _load_config "$conf"
     return 0
   fi
 
   for conf in "$CONFIG_DIR"/*.conf; do
     [ -f "$conf" ] || continue
     (
-      source "$conf"
+      _load_config "$conf"
       case "$PWD" in
-        "$BARE"*|"$WORKTREES"*) exit 0 ;;
+        "${BARE:-}"*|"${WORKTREES:-}"*) exit 0 ;;
       esac
       exit 1
-    ) && { source "$conf"; return 0; }
+    ) && { _load_config "$conf"; return 0; }
   done
 
   local configs=("$CONFIG_DIR"/*.conf)
   if [ ${#configs[@]} -eq 1 ] && [ -f "${configs[0]}" ]; then
-    source "${configs[0]}"
+    _load_config "${configs[0]}"
     return 0
   fi
 
@@ -45,10 +80,14 @@ resolve_repo() {
 # --- workspace helpers (no-op when WORKSPACE is unset) ---
 
 # VS Code workspace files use JSONC (trailing commas, comments).
-# jq only accepts strict JSON, so we strip trailing commas first.
+# jq only accepts strict JSON, so we strip comments and trailing commas first.
 # Note: comments in the workspace file will be lost after modification.
 workspace_read() {
-  perl -0777 -pe 's/,(\s*[\]}])/$1/g' "$WORKSPACE"
+  perl -0777 -pe '
+    s{/\*.*?\*/}{}gs;
+    s{//[^\n]*}{}g;
+    s/,(\s*[\]}])/$1/g;
+  ' "$WORKSPACE"
 }
 
 workspace_add() {
@@ -121,7 +160,6 @@ cmd_list() {
     local created
     created=$(stat -f '%SB' -t '%Y-%m-%d' "$wt_path" 2>/dev/null || echo "?")
 
-    # Check if worktree has local changes
     local wt_porcelain local_line=""
     wt_porcelain=$(git -C "$wt_path" status --porcelain 2>/dev/null || true)
     if [ -n "$wt_porcelain" ]; then
@@ -136,7 +174,6 @@ cmd_list() {
       local_line="$parts"
     fi
 
-    # Check if branch has unique commits vs default branch
     local equal_default=""
     if [ "$branch" != "${DEFAULT_BRANCH:-main}" ]; then
       if git -C "$BARE" merge-base --is-ancestor "$branch" "origin/${DEFAULT_BRANCH:-main}" 2>/dev/null; then
@@ -221,7 +258,6 @@ cmd_fork() {
     exit 1
   fi
 
-  # Must be inside a worktree
   local current_wt current_branch relative_path
   current_wt=$(git rev-parse --show-toplevel 2>/dev/null) \
     || { echo "Error: not inside a worktree" >&2; exit 1; }
@@ -236,7 +272,6 @@ cmd_fork() {
     return 0
   fi
 
-  # Stash uncommitted changes (staged + unstaged + untracked) in source
   local has_changes=false
   if ! git -C "$current_wt" diff --quiet 2>/dev/null || \
      ! git -C "$current_wt" diff --cached --quiet 2>/dev/null || \
@@ -246,7 +281,6 @@ cmd_fork() {
     git -C "$current_wt" stash push --include-untracked -m "wt fork: moving to $new_branch" >&2
   fi
 
-  # Create new worktree branching from current branch
   git -C "$BARE" worktree add --no-track -b "$new_branch" "$WORKTREES/$new_dir" "$current_branch" >&2
 
   if [ -d "${SHARED:-}" ]; then
@@ -257,7 +291,6 @@ cmd_fork() {
     fi
   fi
 
-  # Pop stash in the new worktree
   if [ "$has_changes" = true ]; then
     echo "Applying changes in $new_branch..." >&2
     if ! git -C "$WORKTREES/$new_dir" stash pop >&2; then
@@ -309,7 +342,6 @@ cmd_add() {
     if [ "$no_symlink" = true ]; then
       cp -r "$SHARED"/. "$WORKTREES/$dir"/
     else
-      # Symlink leaf files only; directories express target paths, not symlink targets
       _symlink_shared "$SHARED" "$WORKTREES/$dir"
     fi
   fi
@@ -321,22 +353,61 @@ cmd_add() {
 
 cmd_rm() {
   local force=""
-  if [ "$1" = "--force" ] || [ "$1" = "-f" ]; then
+  if [ "${1:-}" = "--force" ] || [ "${1:-}" = "-f" ]; then
     force="--force"
     shift
   fi
-  local branch="$1"
+  local branch="${1:-}"
   if [ -z "$branch" ]; then
     echo "Usage: wt rm [-f|--force] <branch>" >&2
     exit 1
   fi
   local dir="${branch//\//-}"
-  git -C "$BARE" worktree remove $force "$WORKTREES/$dir" >&2
+
+  # Look up the actual branch name before removing the worktree
+  local actual_branch=""
+  actual_branch=$(git -C "$BARE" worktree list --porcelain \
+    | awk -v wt="$WORKTREES/$dir" '/^worktree /{w=$2} /^branch /{if(w==wt) print $2}' \
+    | sed 's#refs/heads/##')
+
+  if [ -n "$force" ]; then
+    git -C "$BARE" worktree remove --force "$WORKTREES/$dir" >&2
+  else
+    git -C "$BARE" worktree remove "$WORKTREES/$dir" >&2
+  fi
   workspace_remove "$WORKTREES/$dir"
+
+  # Clean up the local branch (safe delete only — fails if not merged)
+  if [ -n "$actual_branch" ] && [ "$actual_branch" != "${DEFAULT_BRANCH:-main}" ]; then
+    git -C "$BARE" branch -d "$actual_branch" 2>/dev/null || true
+  fi
+
   echo "Removed: $WORKTREES/$dir" >&2
 }
 
+cmd_cd() {
+  local branch="${1:-}"
+  if [ -z "$branch" ]; then
+    echo "Usage: wt cd <branch>" >&2
+    exit 1
+  fi
+  local dir="${branch//\//-}"
+  if [ ! -d "$WORKTREES/$dir" ]; then
+    echo "Worktree not found: $WORKTREES/$dir" >&2
+    exit 1
+  fi
+  echo "$WORKTREES/$dir"
+}
+
 cmd_prune() {
+  local dry_run=false
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run|-n) dry_run=true; shift ;;
+      *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+  done
+
   local merged_prs
   merged_prs=$(gh pr list --repo "$REPO" --state merged --limit 50 --json headRefName,number 2>/dev/null || echo "[]")
 
@@ -396,6 +467,16 @@ cmd_prune() {
     return 0
   fi
 
+  if [ "$dry_run" = true ]; then
+    echo "Would remove ${#to_remove[@]} worktree(s):"
+    for entry in "${to_remove[@]}"; do
+      local wt_path branch reason
+      IFS='|' read -r wt_path branch reason <<< "$entry"
+      echo -e "  \033[2;37m$(basename "$wt_path")\033[0m  ($branch)  $reason"
+    done
+    return 0
+  fi
+
   echo "Will remove ${#to_remove[@]} worktree(s):"
   for entry in "${to_remove[@]}"; do
     local wt_path branch reason
@@ -415,6 +496,10 @@ cmd_prune() {
     local wt_path branch reason
     IFS='|' read -r wt_path branch reason <<< "$entry"
     git -C "$BARE" worktree remove "$wt_path" 2>&1 && workspace_remove "$wt_path"
+    # Clean up the local branch (safe delete only)
+    if [ "$branch" != "${DEFAULT_BRANCH:-main}" ]; then
+      git -C "$BARE" branch -d "$branch" 2>/dev/null || true
+    fi
     echo "Removed: $(basename "$wt_path")"
   done
 }
@@ -424,7 +509,7 @@ cmd_init() {
   local name="" bare="" worktrees="" repo="" workspace="" shared="" default_branch=""
 
   # --- Mode 1: wt init <url> — clone from URL ---
-  if [[ "$arg" == http* || "$arg" == git@* ]]; then
+  if [[ "$arg" == http* || "$arg" == git@* || "$arg" == file://* ]]; then
     local url="$arg"; shift
     name=$(echo "$url" | sed -E 's#.*/##; s/\.git$//')
 
@@ -449,15 +534,12 @@ cmd_init() {
 
     bare="$target"
 
-    # Configure fetch to track all remote branches
     git -C "$bare" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' >&2
     git -C "$bare" fetch origin >&2
 
   # --- Mode 2: wt init (no args) — detect from cwd ---
   elif [ -z "$arg" ] || [[ "$arg" == --* ]]; then
-    # Put $arg back if it was a flag
-    [ -n "$arg" ] && set -- "$arg" "$@"
-
+    # $arg is already $1 (no shift happened), so just loop over $@
     while [ $# -gt 0 ]; do
       case "$1" in
         --bare)           bare="$2"; shift 2 ;;
@@ -472,7 +554,6 @@ cmd_init() {
     done
 
     if [ -z "$bare" ]; then
-      # Try to detect bare repo from cwd
       local git_dir
       git_dir=$(git rev-parse --git-common-dir 2>/dev/null || true)
 
@@ -486,7 +567,6 @@ cmd_init() {
         exit 1
       fi
 
-      # git_dir points to the bare repo (or .git dir)
       bare="$(cd "$git_dir" && pwd)"
     fi
 
@@ -514,24 +594,21 @@ cmd_init() {
 
   # --- Resolve paths and defaults ---
 
-  # Expand bare to absolute path
   bare="$(cd "$(dirname "$bare")" && pwd)/$(basename "$bare")"
 
-  # Infer name from bare repo directory if not set
   if [ -z "$name" ]; then
     name=$(basename "$bare" .git)
     name="${name%.bare}"
   fi
 
-  # Infer worktrees directory
   if [ -z "$worktrees" ]; then
     local parent
     parent="$(dirname "$bare")"
     worktrees="$parent/${name}-worktrees"
   fi
+  # shellcheck disable=SC2269
   worktrees="$(cd "$(dirname "$worktrees")" 2>/dev/null && pwd)/$(basename "$worktrees")" 2>/dev/null || worktrees="$worktrees"
 
-  # Infer GitHub repo from remote
   if [ -z "$repo" ]; then
     local remote_url
     remote_url=$(git -C "$bare" remote get-url origin 2>/dev/null || true)
@@ -541,12 +618,10 @@ cmd_init() {
     fi
   fi
 
-  # Infer default branch from remote HEAD
   if [ -z "$default_branch" ]; then
     default_branch=$(git -C "$bare" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's#refs/remotes/origin/##' || true)
   fi
 
-  # Create worktrees directory
   mkdir -p "$worktrees"
 
   # --- Write config ---
@@ -576,10 +651,10 @@ cmd_repos() {
     local name
     name=$(basename "$conf" .conf)
     (
-      source "$conf"
+      _load_config "$conf"
       echo -e "\033[1;33m$name\033[0m"
-      echo "  bare: $BARE"
-      echo "  worktrees: $WORKTREES"
+      echo "  bare: ${BARE:-}"
+      echo "  worktrees: ${WORKTREES:-}"
       [ -n "${REPO:-}" ] && echo "  repo: $REPO"
     )
   done
@@ -610,18 +685,20 @@ cmd_help() {
   echo "wt - Git worktree manager with GitHub integration"
   echo ""
   echo "Usage:"
-  echo "  wt <branch> [base]                  Create worktree (shorthand for 'wt add')"
-  echo "  wt add|new <branch> [base]           Create worktree from base ref"
-  echo "      --no-symlink                     Copy shared files instead of symlinking"
-  echo "  wt fork <branch>                    Fork current worktree into a new branch"
-  echo "      --no-symlink                     Copy shared files instead of symlinking"
-  echo "  wt list|ls                   List all worktrees with PR/CI status"
-  echo "  wt rm|remove [-f] <branch>   Remove a worktree (-f/--force to force)"
-  echo "  wt prune|clean               Remove all worktrees with merged PRs"
-  echo "  wt repos                     List configured repositories"
-  echo "  wt init <url>                Clone a repo and configure it"
-  echo "  wt init                      Auto-detect repo from current directory"
-  echo "  wt init <name> --bare        Explicit configuration"
+  echo "  wt <branch> [base]               Create worktree (shorthand for 'wt add')"
+  echo "  wt add|new <branch> [base]       Create worktree from base ref"
+  echo "      --no-symlink                  Copy shared files instead of symlinking"
+  echo "  wt fork <branch>                 Fork current worktree into a new branch"
+  echo "      --no-symlink                  Copy shared files instead of symlinking"
+  echo "  wt cd <branch>                   Jump to an existing worktree"
+  echo "  wt list|ls                       List all worktrees with PR/CI status"
+  echo "  wt rm|remove [-f] <branch>       Remove a worktree (-f/--force to force)"
+  echo "  wt prune|clean                   Remove all worktrees with merged PRs"
+  echo "      --dry-run|-n                  Show what would be removed without deleting"
+  echo "  wt repos                         List configured repositories"
+  echo "  wt init <url>                    Clone a repo and configure it"
+  echo "  wt init                          Auto-detect repo from current directory"
+  echo "  wt init <name> --bare            Explicit configuration"
   echo ""
   echo "Options:"
   echo "  --repo <name>           Use a specific configured repo"
@@ -631,62 +708,84 @@ cmd_help() {
   echo "  wt init                                Detect from cwd"
   echo "  wt init myproject --bare ~/code/p.git  Explicit bare path"
   echo "  wt my-feature                          Create branch off default"
+  echo "  wt cd my-feature                       Jump to existing worktree"
   echo "  wt list                                Show worktrees with CI/review"
   echo "  wt prune                               Clean up merged worktrees"
+  echo "  wt prune --dry-run                     Preview what would be pruned"
 }
 
 # --- main ---
 
-# Parse global flags
-if [[ "${1:-}" == "--repo" ]]; then
-  WT_REPO="$2"
-  shift 2
-fi
+main() {
+  # Parse global flags
+  if [[ "${1:-}" == "--repo" ]]; then
+    WT_REPO="${2:-}"
+    shift 2
+  fi
 
-case "${1:-}" in
-  ""|-h|--help)
-    cmd_help
-    exit 0
-    ;;
-  init)
-    shift
-    cmd_init "$@"
-    exit 0
-    ;;
-  repos)
-    cmd_repos
-    exit 0
-    ;;
-  __complete)
-    resolve_repo
-    cmd_completions "$2"
-    exit 0
-    ;;
-  list|ls|-l)
-    resolve_repo
-    cmd_list
-    ;;
-  rm|remove|-r)
-    resolve_repo
-    shift
-    cmd_rm "$@"
-    ;;
-  prune|clean)
-    resolve_repo
-    cmd_prune
-    ;;
-  add|new)
-    resolve_repo
-    shift
-    cmd_add "$@"
-    ;;
-  fork)
-    resolve_repo
-    shift
-    cmd_fork "$@"
-    ;;
-  *)
-    resolve_repo
-    cmd_add "$@"
-    ;;
-esac
+  case "${1:-}" in
+    ""|-h|--help)
+      cmd_help
+      exit 0
+      ;;
+    init)
+      _check_deps
+      shift
+      cmd_init "$@"
+      exit 0
+      ;;
+    repos)
+      _check_deps
+      cmd_repos
+      exit 0
+      ;;
+    __complete)
+      resolve_repo
+      cmd_completions "$2"
+      exit 0
+      ;;
+    list|ls|-l)
+      _check_deps
+      resolve_repo
+      cmd_list
+      ;;
+    rm|remove|-r)
+      _check_deps
+      resolve_repo
+      shift
+      cmd_rm "$@"
+      ;;
+    prune|clean)
+      _check_deps
+      resolve_repo
+      shift
+      cmd_prune "$@"
+      ;;
+    cd)
+      resolve_repo
+      shift
+      cmd_cd "$@"
+      ;;
+    add|new)
+      _check_deps
+      resolve_repo
+      shift
+      cmd_add "$@"
+      ;;
+    fork)
+      _check_deps
+      resolve_repo
+      shift
+      cmd_fork "$@"
+      ;;
+    *)
+      _check_deps
+      resolve_repo
+      cmd_add "$@"
+      ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

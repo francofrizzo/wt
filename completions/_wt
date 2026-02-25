@@ -17,6 +17,7 @@ _wt() {
     'prune:Remove merged worktrees'
     'clean:Remove merged worktrees (alias for prune)'
     'fork:Fork current worktree into a new branch'
+    'cd:Jump to an existing worktree'
     'repos:List configured repositories'
     'init:Configure a new repository'
   )
@@ -42,12 +43,20 @@ _wt() {
         local -a wts
         wts=(${(f)"$(command wt --repo "$words[3]" __complete worktrees 2>/dev/null)"})
         _describe 'worktree branch' wts
+      elif [[ "$words[4]" == cd ]]; then
+        local -a wts
+        wts=(${(f)"$(command wt --repo "$words[3]" __complete worktrees 2>/dev/null)"})
+        _describe 'worktree branch' wts
       elif [[ "$words[4]" == (add|new) ]]; then
         local -a branches
         branches=(${(f)"$(command wt --repo "$words[3]" __complete branches 2>/dev/null)"})
         _describe 'branch' branches
       elif [[ "$words[4]" == fork ]]; then
         _message 'new branch name'
+      elif [[ "$words[4]" == (prune|clean) ]]; then
+        local -a opts
+        opts=('--dry-run:Show what would be removed without deleting' '-n:Show what would be removed without deleting')
+        _describe 'option' opts
       fi
       return
     fi
@@ -60,6 +69,10 @@ _wt() {
     branches=(${(f)"$(command wt __complete branches 2>/dev/null)"})
     _describe 'branch' branches
   elif [[ "$words[2]" == (rm|remove|-r) ]]; then
+    local -a wts
+    wts=(${(f)"$(command wt __complete worktrees 2>/dev/null)"})
+    _describe 'worktree branch' wts
+  elif [[ "$words[2]" == cd ]]; then
     local -a wts
     wts=(${(f)"$(command wt __complete worktrees 2>/dev/null)"})
     _describe 'worktree branch' wts
@@ -78,6 +91,10 @@ _wt() {
       opts=('--no-symlink:Copy shared files instead of symlinking')
       _describe 'option' opts
     fi
+  elif [[ "$words[2]" == (prune|clean) ]]; then
+    local -a opts
+    opts=('--dry-run:Show what would be removed without deleting' '-n:Show what would be removed without deleting')
+    _describe 'option' opts
   elif [[ "$words[2]" == init ]]; then
     if (( CURRENT == 3 )); then
       _message 'repo name'
