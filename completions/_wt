@@ -5,13 +5,51 @@
 # Installed automatically by Homebrew, or manually:
 #   fpath=("$(brew --prefix)/share/zsh/site-functions" $fpath)
 
+# Helpers — access _wt's locals via dynamic scoping
+
+_wt_repos() {
+  local -a repos
+  repos=(${(f)"$(command wt __complete repos 2>/dev/null)"})
+  (( ${#repos} )) && _describe 'repo' repos
+}
+
+_wt_branches() {
+  local -a branches
+  branches=(${(f)"$(command wt ${_wt_repo_args[@]} __complete branches 2>/dev/null)"})
+  (( ${#branches} )) && _describe 'branch' branches
+}
+
+_wt_worktrees() {
+  local -a wts
+  wts=(${(f)"$(command wt ${_wt_repo_args[@]} __complete worktrees 2>/dev/null)"})
+  (( ${#wts} )) && _describe 'worktree branch' wts
+}
+
+_wt_has_word() {
+  local target="$1" w
+  for w in "${words[@]}"; do
+    [[ "$w" == "$target" ]] && return 0
+  done
+  return 1
+}
+
+_wt_first_arg() {
+  _describe 'subcommand' _wt_subcmds
+  _wt_branches
+}
+
 _wt() {
-  local -a subcmds
-  subcmds=(
+  local context state state_descr line
+  typeset -A opt_args
+
+  local -a _wt_repo_args
+  local -a _wt_subcmds=(
     'list:List all worktrees with details'
     'ls:List all worktrees (alias for list)'
+    '-l:List all worktrees (alias for list)'
     'rm:Remove a worktree'
     'remove:Remove a worktree (alias for rm)'
+    '-r:Remove a worktree (alias for rm)'
     'add:Create a worktree'
     'new:Create a worktree (alias for add)'
     'prune:Remove merged worktrees'
@@ -22,88 +60,143 @@ _wt() {
     'init:Configure a new repository'
   )
 
-  # Handle --repo <name> as first arg
-  if [[ "$words[2]" == "--repo" ]]; then
-    if (( CURRENT == 3 )); then
-      local -a repos
-      repos=(${(f)"$(command wt __complete repos 2>/dev/null)"})
-      _describe 'repo' repos
-      return
-    fi
-    # Shift context: after --repo <name>, complete like normal position 2
-    if (( CURRENT == 4 )); then
-      _describe 'subcommand' subcmds
-      local -a branches
-      branches=(${(f)"$(command wt --repo "$words[3]" __complete branches 2>/dev/null)"})
-      _describe 'branch' branches
-      return
-    fi
-    if (( CURRENT == 5 )); then
-      if [[ "$words[4]" == (rm|remove|-r) ]]; then
-        local -a wts
-        wts=(${(f)"$(command wt --repo "$words[3]" __complete worktrees 2>/dev/null)"})
-        _describe 'worktree branch' wts
-      elif [[ "$words[4]" == cd ]]; then
-        local -a wts
-        wts=(${(f)"$(command wt --repo "$words[3]" __complete worktrees 2>/dev/null)"})
-        _describe 'worktree branch' wts
-      elif [[ "$words[4]" == (add|new) ]]; then
-        local -a branches
-        branches=(${(f)"$(command wt --repo "$words[3]" __complete branches 2>/dev/null)"})
-        _describe 'branch' branches
-      elif [[ "$words[4]" == fork ]]; then
-        _message 'new branch name'
-      elif [[ "$words[4]" == (prune|clean) ]]; then
-        local -a opts
-        opts=('--dry-run:Show what would be removed without deleting' '-n:Show what would be removed without deleting')
-        _describe 'option' opts
-      fi
-      return
-    fi
-    return
-  fi
+  # Pre-scan --repo for helpers called during _arguments processing
+  [[ "$words[2]" == "--repo" && -n "$words[3]" ]] && _wt_repo_args=(--repo "$words[3]")
 
-  if (( CURRENT == 2 )); then
-    _describe 'subcommand' subcmds
-    local -a branches
-    branches=(${(f)"$(command wt __complete branches 2>/dev/null)"})
-    _describe 'branch' branches
-  elif [[ "$words[2]" == (rm|remove|-r) ]]; then
-    local -a wts
-    wts=(${(f)"$(command wt __complete worktrees 2>/dev/null)"})
-    _describe 'worktree branch' wts
-  elif [[ "$words[2]" == cd ]]; then
-    local -a wts
-    wts=(${(f)"$(command wt __complete worktrees 2>/dev/null)"})
-    _describe 'worktree branch' wts
-  elif [[ "$words[2]" == (add|new) ]]; then
-    local -a branches
-    branches=(${(f)"$(command wt __complete branches 2>/dev/null)"})
-    _describe 'branch' branches
-    local -a opts
-    opts=('--no-symlink:Copy shared files instead of symlinking')
-    _describe 'option' opts
-  elif [[ "$words[2]" == fork ]]; then
-    if (( CURRENT == 3 )); then
-      _message 'new branch name'
-    else
-      local -a opts
-      opts=('--no-symlink:Copy shared files instead of symlinking')
-      _describe 'option' opts
-    fi
-  elif [[ "$words[2]" == (prune|clean) ]]; then
-    local -a opts
-    opts=('--dry-run:Show what would be removed without deleting' '-n:Show what would be removed without deleting')
-    _describe 'option' opts
-  elif [[ "$words[2]" == init ]]; then
-    if (( CURRENT == 3 )); then
-      _message 'repo name'
-    else
-      local -a opts
-      opts=('--bare:Path to bare repo' '--worktrees:Worktree directory' '--repo:GitHub owner/repo' '--workspace:VS Code workspace file' '--shared:Shared files directory' '--default-branch:Default branch name')
-      _describe 'option' opts
-    fi
-  fi
+  _arguments -s -C \
+    '--repo[Use a specific configured repo]: :_wt_repos' \
+    '(-): :_wt_first_arg' \
+    '(-)*:: :->args' \
+  && return
+
+  # Update repo_args from parsed options (for state handler)
+  [[ -n "${opt_args[--repo]}" ]] && _wt_repo_args=(--repo "${opt_args[--repo]}")
+
+  # In the args state, words/CURRENT are shifted:
+  #   words[1] = subcommand, CURRENT=2 = first arg after subcommand
+  case $state in
+    args)
+      case $line[1] in
+        add|new)
+          local -a opts
+          _wt_has_word '--no-symlink' || opts=('--no-symlink:Copy shared files instead of symlinking')
+          case $CURRENT in
+            2)
+              _wt_branches
+              (( ${#opts} )) && _describe 'option' opts
+              ;;
+            3)
+              _wt_branches
+              (( ${#opts} )) && _describe 'option' opts
+              ;;
+            4)
+              (( ${#opts} )) && _describe 'option' opts
+              ;;
+          esac
+          ;;
+
+        rm|remove|-r)
+          case $CURRENT in
+            2)
+              _wt_worktrees
+              local -a opts=('--force:Force removal' '-f:Force removal')
+              _describe 'option' opts
+              ;;
+            3)
+              [[ "$words[2]" == (--force|-f) ]] && _wt_worktrees
+              ;;
+          esac
+          ;;
+
+        cd)
+          (( CURRENT == 2 )) && _wt_worktrees
+          ;;
+
+        fork)
+          case $CURRENT in
+            2) _message 'new branch name' ;;
+            3)
+              if ! _wt_has_word '--no-symlink'; then
+                local -a opts=('--no-symlink:Copy shared files instead of symlinking')
+                _describe 'option' opts
+              fi
+              ;;
+          esac
+          ;;
+
+        prune|clean)
+          if (( CURRENT == 2 )); then
+            local -a opts=('--dry-run:Show what would be removed without deleting' '-n:Show what would be removed without deleting')
+            _describe 'option' opts
+          fi
+          ;;
+
+        init)
+          if (( CURRENT == 2 )); then
+            _message 'repo name or URL'
+          else
+            local prev_word="${words[$((CURRENT - 1))]}"
+            case "$prev_word" in
+              --bare|--worktrees|--workspace|--shared)
+                _files
+                ;;
+              --name|--repo|--default-branch)
+                _message "${prev_word#--}"
+                ;;
+              *)
+                local first_arg="${words[2]}"
+                local -a all_flags
+                if [[ "$first_arg" == http* || "$first_arg" == git@* || "$first_arg" == file://* ]]; then
+                  all_flags=(
+                    '--name:Config name'
+                    '--worktrees:Worktree directory'
+                    '--workspace:VS Code workspace file'
+                    '--shared:Shared files directory'
+                    '--default-branch:Default branch name'
+                  )
+                else
+                  all_flags=(
+                    '--name:Config name'
+                    '--bare:Path to bare repo'
+                    '--worktrees:Worktree directory'
+                    '--repo:GitHub owner/repo'
+                    '--workspace:VS Code workspace file'
+                    '--shared:Shared files directory'
+                    '--default-branch:Default branch name'
+                  )
+                fi
+                local -a available
+                local entry flag
+                for entry in "${all_flags[@]}"; do
+                  flag="${entry%%:*}"
+                  _wt_has_word "$flag" || available+=("$entry")
+                done
+                (( ${#available} )) && _describe 'option' available
+                ;;
+            esac
+          fi
+          ;;
+
+        list|ls|-l|repos)
+          ;;
+
+        *)
+          # Bare branch name: wt <branch> [base] [--no-symlink]
+          local -a opts
+          _wt_has_word '--no-symlink' || opts=('--no-symlink:Copy shared files instead of symlinking')
+          case $CURRENT in
+            2)
+              _wt_branches
+              (( ${#opts} )) && _describe 'option' opts
+              ;;
+            3)
+              (( ${#opts} )) && _describe 'option' opts
+              ;;
+          esac
+          ;;
+      esac
+      ;;
+  esac
 }
 
 _wt "$@"

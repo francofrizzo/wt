@@ -7,6 +7,16 @@
 # automatically cd into the created directory. All other commands pass
 # through to the wt binary directly.
 
+# Register completion (compdef may have missed the shell function)
+if (( $+functions[compdef] )); then
+  local _wt_comp_dir="${0:A:h:h}/completions"
+  if [[ -d "$_wt_comp_dir" ]] && (( ! ${fpath[(I)$_wt_comp_dir]} )); then
+    fpath=("$_wt_comp_dir" $fpath)
+  fi
+  autoload -Uz _wt
+  compdef _wt wt
+fi
+
 wt() {
   case "$1" in
     ""|-h|--help|-l|-r|list|ls|rm|remove|prune|clean|repos|init|__complete)
