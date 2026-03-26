@@ -23,78 +23,57 @@ setup() {
   assert_equal "$fork_commit" "$source_commit"
 }
 
-@test "fork with dirty state transfers changes" {
+@test "fork moves changes to destination and drops from source" {
   create_test_worktree "dirty-source"
   dirty_worktree "dirty-source"
+  untracked_in_worktree "dirty-source"
 
   cd "$TEST_WORKTREES/dirty-source"
   run_wt fork dirty-fork
 
   assert_success
-  assert [ -d "$TEST_WORKTREES/dirty-fork" ]
 
-  # Source should be clean after fork
+  # Source should be clean
   local source_status
   source_status=$(git -C "$TEST_WORKTREES/dirty-source" status --porcelain)
   assert_equal "$source_status" ""
 
-  # New worktree should have the changes
+  # Destination should have the changes
   local fork_status
   fork_status=$(git -C "$TEST_WORKTREES/dirty-fork" status --porcelain)
   assert [ -n "$fork_status" ]
-}
+  assert [ -f "$TEST_WORKTREES/dirty-fork/untracked_file.txt" ]
 
-@test "fork with untracked files transfers them" {
-  create_test_worktree "untracked-source"
-  untracked_in_worktree "untracked-source"
-
-  cd "$TEST_WORKTREES/untracked-source"
-  run_wt fork untracked-fork
-
-  assert_success
-
-  # Untracked file should be in new worktree
-  assert [ -f "$TEST_WORKTREES/untracked-fork/untracked_file.txt" ]
-
-  # Source should be clean
-  local source_untracked
-  source_untracked=$(git -C "$TEST_WORKTREES/untracked-source" ls-files --others --exclude-standard)
-  assert_equal "$source_untracked" ""
+  # No leftover stash in either worktree
+  assert_equal "$(git -C "$TEST_WORKTREES/dirty-source" stash list | wc -l | tr -d ' ')" "0"
+  assert_equal "$(git -C "$TEST_WORKTREES/dirty-fork" stash list | wc -l | tr -d ' ')" "0"
 }
 
 @test "fork --keep preserves changes in both worktrees" {
   create_test_worktree "keep-source"
   dirty_worktree "keep-source"
+  untracked_in_worktree "keep-source"
 
   cd "$TEST_WORKTREES/keep-source"
   run_wt fork keep-fork --keep
 
   assert_success
-  assert [ -d "$TEST_WORKTREES/keep-fork" ]
 
   # Source should still have changes
   local source_status
   source_status=$(git -C "$TEST_WORKTREES/keep-source" status --porcelain)
   assert [ -n "$source_status" ]
+  assert [ -f "$TEST_WORKTREES/keep-source/untracked_file.txt" ]
 
-  # New worktree should also have the changes
+  # Destination should also have the changes
   local fork_status
   fork_status=$(git -C "$TEST_WORKTREES/keep-fork" status --porcelain)
   assert [ -n "$fork_status" ]
-}
+  assert [ -f "$TEST_WORKTREES/keep-fork/untracked_file.txt" ]
 
-@test "fork --keep with untracked files preserves them in both" {
-  create_test_worktree "keep-untracked"
-  untracked_in_worktree "keep-untracked"
-
-  cd "$TEST_WORKTREES/keep-untracked"
-  run_wt fork keep-untracked-fork --keep
-
-  assert_success
-
-  # Untracked file should be in both worktrees
-  assert [ -f "$TEST_WORKTREES/keep-untracked/untracked_file.txt" ]
-  assert [ -f "$TEST_WORKTREES/keep-untracked-fork/untracked_file.txt" ]
+  # No leftover stash in either worktree
+  assert_equal "$(git -C "$TEST_WORKTREES/keep-source" stash list | wc -l | tr -d ' ')" "0"
+  assert_equal "$(git -C "$TEST_WORKTREES/keep-fork" stash list | wc -l | tr -d ' ')" "0"
 }
 
 @test "fork preserves relative path in output" {

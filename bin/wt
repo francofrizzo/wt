@@ -303,8 +303,9 @@ cmd_fork() {
     fi
     if [ "$keep" = true ]; then
       git -C "$current_wt" stash pop --quiet >&2
+    else
+      git -C "$current_wt" stash drop --quiet >&2
     fi
-    git stash drop --quiet >&2 2>/dev/null || true
   fi
 
   workspace_add "$WORKTREES/$new_dir"
