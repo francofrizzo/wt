@@ -124,10 +124,11 @@ wt cd my-feature
 
 ```bash
 wt fork new-branch              # fork current branch into new-branch
+wt fork new-branch --keep       # fork and keep changes in both worktrees
 wt fork new-branch --no-symlink # copy shared files instead of symlinking
 ```
 
-Creates a new worktree branching from the current one. If you have uncommitted changes (staged, unstaged, or untracked), they are moved to the new worktree automatically.
+Creates a new worktree branching from the current one. If you have uncommitted changes (staged, unstaged, or untracked), they are moved to the new worktree automatically. Use `--keep` to preserve the changes in the original worktree as well.
 
 ### Remove a worktree
 

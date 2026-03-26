@@ -57,6 +57,7 @@ _wt() {
     'fork:Fork current worktree into a new branch'
     'cd:Jump to an existing worktree'
     'repos:List configured repositories'
+    'claude-setup:Configure Claude Code directory access'
     'init:Configure a new repository'
   )
 
@@ -115,11 +116,11 @@ _wt() {
         fork)
           case $CURRENT in
             2) _message 'new branch name' ;;
-            3)
-              if ! _wt_has_word '--no-symlink'; then
-                local -a opts=('--no-symlink:Copy shared files instead of symlinking')
-                _describe 'option' opts
-              fi
+            *)
+              local -a opts=()
+              _wt_has_word '--no-symlink' || opts+=('--no-symlink:Copy shared files instead of symlinking')
+              _wt_has_word '--keep' || opts+=('--keep:Keep working changes in the original worktree')
+              (( ${#opts} )) && _describe 'option' opts
               ;;
           esac
           ;;
@@ -177,7 +178,7 @@ _wt() {
           fi
           ;;
 
-        list|ls|-l|repos)
+        list|ls|-l|repos|claude-setup)
           ;;
 
         *)

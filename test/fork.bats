@@ -62,6 +62,41 @@ setup() {
   assert_equal "$source_untracked" ""
 }
 
+@test "fork --keep preserves changes in both worktrees" {
+  create_test_worktree "keep-source"
+  dirty_worktree "keep-source"
+
+  cd "$TEST_WORKTREES/keep-source"
+  run_wt fork keep-fork --keep
+
+  assert_success
+  assert [ -d "$TEST_WORKTREES/keep-fork" ]
+
+  # Source should still have changes
+  local source_status
+  source_status=$(git -C "$TEST_WORKTREES/keep-source" status --porcelain)
+  assert [ -n "$source_status" ]
+
+  # New worktree should also have the changes
+  local fork_status
+  fork_status=$(git -C "$TEST_WORKTREES/keep-fork" status --porcelain)
+  assert [ -n "$fork_status" ]
+}
+
+@test "fork --keep with untracked files preserves them in both" {
+  create_test_worktree "keep-untracked"
+  untracked_in_worktree "keep-untracked"
+
+  cd "$TEST_WORKTREES/keep-untracked"
+  run_wt fork keep-untracked-fork --keep
+
+  assert_success
+
+  # Untracked file should be in both worktrees
+  assert [ -f "$TEST_WORKTREES/keep-untracked/untracked_file.txt" ]
+  assert [ -f "$TEST_WORKTREES/keep-untracked-fork/untracked_file.txt" ]
+}
+
 @test "fork preserves relative path in output" {
   create_test_worktree "path-source"
   mkdir -p "$TEST_WORKTREES/path-source/subdir/nested"

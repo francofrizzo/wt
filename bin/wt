@@ -247,17 +247,19 @@ _symlink_shared() {
 
 cmd_fork() {
   local no_symlink=false
+  local keep=false
   local positional=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-symlink) no_symlink=true; shift ;;
+      --keep) keep=true; shift ;;
       *) positional+=("$1"); shift ;;
     esac
   done
 
   local new_branch="${positional[0]:-}"
   if [ -z "$new_branch" ]; then
-    echo "Usage: wt fork <new-branch> [--no-symlink]" >&2
+    echo "Usage: wt fork <new-branch> [--keep] [--no-symlink]" >&2
     exit 1
   fi
 
@@ -296,9 +298,13 @@ cmd_fork() {
 
   if [ "$has_changes" = true ]; then
     echo "Applying changes in $new_branch..." >&2
-    if ! git -C "$WORKTREES/$new_dir" stash pop >&2; then
+    if ! git -C "$WORKTREES/$new_dir" stash apply >&2; then
       echo "Warning: stash applied with conflicts — resolve them in the new worktree" >&2
     fi
+    if [ "$keep" = true ]; then
+      git -C "$current_wt" stash pop --quiet >&2
+    fi
+    git stash drop --quiet >&2 2>/dev/null || true
   fi
 
   workspace_add "$WORKTREES/$new_dir"
@@ -664,6 +670,58 @@ cmd_repos() {
   done
 }
 
+cmd_claude_setup() {
+  local settings_file="$HOME/.claude/settings.json"
+
+  # Collect WORKTREES directories from all configs
+  local dirs=()
+  for conf in "$CONFIG_DIR"/*.conf; do
+    [ -f "$conf" ] || continue
+    local dir
+    dir=$(
+      _load_config "$conf"
+      echo "$WORKTREES"
+    )
+    [ -n "$dir" ] && dirs+=("$dir")
+  done
+
+  if [ ${#dirs[@]} -eq 0 ]; then
+    echo "No repositories configured. Run 'wt init' first." >&2
+    exit 1
+  fi
+
+  # Build jq array from collected dirs
+  local dirs_json="[]"
+  for dir in "${dirs[@]}"; do
+    dirs_json=$(echo "$dirs_json" | jq --arg d "$dir" '. + [$d]')
+  done
+
+  # Read or create settings
+  local settings="{}"
+  if [ -f "$settings_file" ]; then
+    settings=$(cat "$settings_file")
+  else
+    mkdir -p "$(dirname "$settings_file")"
+  fi
+
+  # Merge directories (add new, keep existing, deduplicate)
+  settings=$(echo "$settings" | jq --argjson new "$dirs_json" '
+    .permissions.additionalDirectories = (
+      (.permissions.additionalDirectories // []) + $new | unique
+    )
+  ')
+
+  echo "$settings" > "$settings_file"
+
+  echo "Updated $settings_file"
+  echo "Added worktree directories:"
+  for dir in "${dirs[@]}"; do
+    echo "  $dir"
+  done
+  echo ""
+  echo "Claude Code will now have access to worktrees in these directories."
+}
+
 # --- completions (used by _wt) ---
 
 cmd_completions() {
@@ -692,7 +750,8 @@ cmd_help() {
   echo "  wt <branch> [base]               Create worktree (shorthand for 'wt add')"
   echo "  wt add|new <branch> [base]       Create worktree from base ref"
   echo "      --no-symlink                  Copy shared files instead of symlinking"
-  echo "  wt fork <branch>                 Fork current worktree into a new branch"
+  echo "  wt fork <branch>                 Fork current worktree, migrating working changes"
+  echo "      --keep                        Keep working changes in the original worktree too"
   echo "      --no-symlink                  Copy shared files instead of symlinking"
   echo "  wt cd <branch>                   Jump to an existing worktree"
   echo "  wt list|ls                       List all worktrees with PR/CI status"
@@ -700,6 +759,7 @@ cmd_help() {
   echo "  wt prune|clean                   Remove all worktrees with merged PRs"
   echo "      --dry-run|-n                  Show what would be removed without deleting"
   echo "  wt repos                         List configured repositories"
+  echo "  wt claude-setup                  Configure Claude Code directory access"
   echo "  wt init <url>                    Clone a repo and configure it"
   echo "  wt init                          Auto-detect repo from current directory"
   echo "  wt init <name> --bare            Explicit configuration"
@@ -741,6 +801,10 @@ main() {
     repos)
       _check_deps
       cmd_repos
+      exit 0
+      ;;
+    claude-setup)
+      cmd_claude_setup
       exit 0
       ;;
     __complete)
