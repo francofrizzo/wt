@@ -749,7 +749,7 @@ cmd_help() {
   echo ""
   echo "Usage:"
   echo "  wt <branch> [base]               Create worktree (shorthand for 'wt add')"
-  echo "  wt add|new <branch> [base]       Create worktree from base ref"
+  echo "  wt add|new <branch> [base]       Create worktree from base ref (use HEAD for current branch)"
   echo "      --no-symlink                  Copy shared files instead of symlinking"
   echo "  wt fork <branch>                 Fork current worktree, migrating working changes"
   echo "      --keep                        Keep working changes in the original worktree too"

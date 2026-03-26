@@ -90,6 +90,7 @@ DEFAULT_BRANCH="main"
 ```bash
 wt my-feature                    # new branch off origin/main
 wt my-feature origin/dev         # new branch off origin/dev
+wt my-feature HEAD               # new branch off the current branch
 wt add my-feature                # explicit add subcommand
 wt add my-feature --no-symlink   # copy shared files instead of symlinking
 ```
