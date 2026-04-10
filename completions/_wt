@@ -126,10 +126,11 @@ _wt() {
           ;;
 
         prune|clean)
-          if (( CURRENT == 2 )); then
-            local -a opts=('--dry-run:Show what would be removed without deleting' '-n:Show what would be removed without deleting')
-            _describe 'option' opts
-          fi
+          local -a opts=()
+          _wt_has_word '--dry-run'     || _wt_has_word '-n' || opts+=('--dry-run:Show what would be removed without deleting' '-n:Show what would be removed without deleting')
+          _wt_has_word '--all'         || _wt_has_word '-a' || opts+=('--all:Consider all non-default worktrees' '-a:Consider all non-default worktrees')
+          _wt_has_word '--interactive' || _wt_has_word '-i' || opts+=('--interactive:Prompt y/N per worktree' '-i:Prompt y/N per worktree')
+          (( ${#opts} )) && _describe 'option' opts
           ;;
 
         init)

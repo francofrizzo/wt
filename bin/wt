@@ -411,9 +411,13 @@ cmd_cd() {
 
 cmd_prune() {
   local dry_run=false
+  local all_mode=false
+  local interactive=false
   while [ $# -gt 0 ]; do
     case "$1" in
-      --dry-run|-n) dry_run=true; shift ;;
+      --dry-run|-n)     dry_run=true; shift ;;
+      --all|-a)         all_mode=true; shift ;;
+      --interactive|-i) interactive=true; shift ;;
       *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
   done
@@ -424,7 +428,7 @@ cmd_prune() {
   echo "Fetching origin..." >&2
   git -C "$BARE" fetch origin >&2
 
-  local to_remove=()
+  local to_consider=()
   local dirty_skipped=()
   while IFS= read -r line; do
     local wt_path branch_ref
@@ -437,6 +441,11 @@ cmd_prune() {
     [ "$branch" = "${DEFAULT_BRANCH:-main}" ] && continue
     [ "$branch" = "main" ] && continue
 
+    local dirty=0
+    local wt_porcelain
+    wt_porcelain=$(git -C "$wt_path" status --porcelain 2>/dev/null || true)
+    [ -n "$wt_porcelain" ] && dirty=1
+
     local reason=""
     local pr_number
     pr_number=$(echo "$merged_prs" | jq -r --arg b "$branch" '[.[] | select(.headRefName == $b)] | first | .number // empty' 2>/dev/null)
@@ -444,21 +453,23 @@ cmd_prune() {
     if [ -n "$pr_number" ]; then
       reason="merged PR #$pr_number"
     elif git -C "$BARE" merge-base --is-ancestor "$branch" "origin/${DEFAULT_BRANCH:-main}" 2>/dev/null; then
-      local wt_porcelain
-      wt_porcelain=$(git -C "$wt_path" status --porcelain 2>/dev/null || true)
-      if [ -n "$wt_porcelain" ]; then
+      if [ "$dirty" = 1 ] && [ "$all_mode" = false ]; then
         dirty_skipped+=("$wt_path|$branch")
         continue
       fi
       reason="= ${DEFAULT_BRANCH:-main}"
+    elif [ "$all_mode" = true ]; then
+      reason="active"
     fi
 
     if [ -n "$reason" ]; then
-      to_remove+=("$wt_path|$branch|$reason")
+      local force_needed=0
+      [ "$dirty" = 1 ] && [ "$all_mode" = true ] && force_needed=1
+      to_consider+=("$wt_path|$branch|$reason|$dirty|$force_needed")
     fi
   done < <(git -C "$BARE" worktree list --porcelain | awk '/^worktree /{wt=$2} /^branch /{print wt, $2}')
 
-  if [ ${#to_remove[@]} -eq 0 ] && [ ${#dirty_skipped[@]} -eq 0 ]; then
+  if [ ${#to_consider[@]} -eq 0 ] && [ ${#dirty_skipped[@]} -eq 0 ]; then
     echo "No worktrees to clean up."
     return 0
   fi
@@ -473,40 +484,70 @@ cmd_prune() {
     echo ""
   fi
 
-  if [ ${#to_remove[@]} -eq 0 ]; then
+  if [ ${#to_consider[@]} -eq 0 ]; then
     echo "No clean worktrees to remove."
     return 0
   fi
 
+  _print_entry() {
+    local wt_path="$1" branch="$2" reason="$3" dirty="$4"
+    local label="$reason"
+    [ "$dirty" = 1 ] && label="$label, \033[33mdirty\033[0m"
+    echo -e "  \033[2;37m$(basename "$wt_path")\033[0m  ($branch)  $label"
+  }
+
   if [ "$dry_run" = true ]; then
-    echo "Would remove ${#to_remove[@]} worktree(s):"
-    for entry in "${to_remove[@]}"; do
-      local wt_path branch reason
-      IFS='|' read -r wt_path branch reason <<< "$entry"
-      echo -e "  \033[2;37m$(basename "$wt_path")\033[0m  ($branch)  $reason"
+    local verb="Would remove"
+    [ "$interactive" = true ] && verb="Would consider"
+    echo "$verb ${#to_consider[@]} worktree(s):"
+    for entry in "${to_consider[@]}"; do
+      local wt_path branch reason dirty force_needed
+      IFS='|' read -r wt_path branch reason dirty force_needed <<< "$entry"
+      _print_entry "$wt_path" "$branch" "$reason" "$dirty"
     done
     return 0
   fi
 
-  echo "Will remove ${#to_remove[@]} worktree(s):"
-  for entry in "${to_remove[@]}"; do
-    local wt_path branch reason
-    IFS='|' read -r wt_path branch reason <<< "$entry"
-    echo -e "  \033[2;37m$(basename "$wt_path")\033[0m  ($branch)  $reason"
-  done
+  local to_remove=()
+  if [ "$interactive" = true ]; then
+    for entry in "${to_consider[@]}"; do
+      local wt_path branch reason dirty force_needed
+      IFS='|' read -r wt_path branch reason dirty force_needed <<< "$entry"
+      _print_entry "$wt_path" "$branch" "$reason" "$dirty"
+      printf "  Remove? [y/N] "
+      read -r answer
+      [[ "$answer" == [yY] ]] && to_remove+=("$entry")
+    done
+    if [ ${#to_remove[@]} -eq 0 ]; then
+      echo "Nothing removed."
+      return 0
+    fi
+  else
+    echo "Will remove ${#to_consider[@]} worktree(s):"
+    for entry in "${to_consider[@]}"; do
+      local wt_path branch reason dirty force_needed
+      IFS='|' read -r wt_path branch reason dirty force_needed <<< "$entry"
+      _print_entry "$wt_path" "$branch" "$reason" "$dirty"
+    done
 
-  echo ""
-  printf "Proceed? [y/N] "
-  read -r answer
-  if [[ "$answer" != [yY] ]]; then
-    echo "Aborted."
-    return 0
+    echo ""
+    printf "Proceed? [y/N] "
+    read -r answer
+    if [[ "$answer" != [yY] ]]; then
+      echo "Aborted."
+      return 0
+    fi
+    to_remove=("${to_consider[@]}")
   fi
 
   for entry in "${to_remove[@]}"; do
-    local wt_path branch reason
-    IFS='|' read -r wt_path branch reason <<< "$entry"
-    git -C "$BARE" worktree remove "$wt_path" 2>&1 && workspace_remove "$wt_path"
+    local wt_path branch reason dirty force_needed
+    IFS='|' read -r wt_path branch reason dirty force_needed <<< "$entry"
+    if [ "$force_needed" = 1 ]; then
+      git -C "$BARE" worktree remove --force "$wt_path" 2>&1 && workspace_remove "$wt_path"
+    else
+      git -C "$BARE" worktree remove "$wt_path" 2>&1 && workspace_remove "$wt_path"
+    fi
     # Clean up the local branch (safe delete only)
     if [ "$branch" != "${DEFAULT_BRANCH:-main}" ] && [ "$branch" != "main" ]; then
       git -C "$BARE" branch -d "$branch" 2>/dev/null || true
@@ -759,6 +800,8 @@ cmd_help() {
   echo "  wt rm|remove [-f] <branch>       Remove a worktree (-f/--force to force)"
   echo "  wt prune|clean                   Remove all worktrees with merged PRs"
   echo "      --dry-run|-n                  Show what would be removed without deleting"
+  echo "      --all|-a                      Consider all non-default worktrees, not only merged"
+  echo "      --interactive|-i              Prompt y/N per worktree instead of a single bulk confirm"
   echo "  wt repos                         List configured repositories"
   echo "  wt claude-setup                  Configure Claude Code directory access"
   echo "  wt init <url>                    Clone a repo and configure it"
@@ -777,6 +820,7 @@ cmd_help() {
   echo "  wt list                                Show worktrees with CI/review"
   echo "  wt prune                               Clean up merged worktrees"
   echo "  wt prune --dry-run                     Preview what would be pruned"
+  echo "  wt prune --all -i                      Walk every worktree, y/N each"
 }
 
 # --- main ---
