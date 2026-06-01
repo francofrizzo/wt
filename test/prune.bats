@@ -9,7 +9,7 @@ setup() {
   create_test_worktree "merged-prune"
 
   mock_gh 'case "$*" in
-    *"pr list"*"--state merged"*) echo "[{\"headRefName\":\"merged-prune\",\"number\":50}]" ;;
+    *"pr list"*"merged"*) echo "[{\"headRefName\":\"merged-prune\",\"number\":50}]" ;;
     *) echo "[]" ;;
   esac'
 
@@ -99,7 +99,7 @@ EOF
   create_test_worktree "remove-me"
 
   mock_gh 'case "$*" in
-    *"pr list"*"--state merged"*) echo "[{\"headRefName\":\"keep-me\",\"number\":1},{\"headRefName\":\"remove-me\",\"number\":2}]" ;;
+    *"pr list"*"merged"*) echo "[{\"headRefName\":\"keep-me\",\"number\":1},{\"headRefName\":\"remove-me\",\"number\":2}]" ;;
     *) echo "[]" ;;
   esac'
 
@@ -114,7 +114,7 @@ EOF
   create_test_worktree "merged-keep"
 
   mock_gh 'case "$*" in
-    *"pr list"*"--state merged"*) echo "[{\"headRefName\":\"merged-keep\",\"number\":3}]" ;;
+    *"pr list"*"merged"*) echo "[{\"headRefName\":\"merged-keep\",\"number\":3}]" ;;
     *) echo "[]" ;;
   esac'
 

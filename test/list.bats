@@ -32,7 +32,7 @@ setup() {
 
   mock_gh 'case "$*" in
     *"pr list"*"--state open"*) echo "[{\"headRefName\":\"pr-branch\",\"number\":42,\"reviewDecision\":\"\"}]" ;;
-    *"pr list"*"--state merged"*) echo "[]" ;;
+    *"pr list"*"merged"*) echo "[]" ;;
     *"check-runs"*) echo "{\"check_runs\":[]}" ;;
     *) echo "[]" ;;
   esac'
@@ -45,10 +45,13 @@ setup() {
 
 @test "shows merged PR" {
   create_test_worktree "merged-branch"
+  # Unique commit so the branch is NOT an ancestor of main: the only way it can
+  # read as merged is via the PR lookup, not the "= main" ancestor shortcut.
+  add_commit_to_worktree "merged-branch" "merged work"
 
   mock_gh 'case "$*" in
     *"pr list"*"--state open"*) echo "[]" ;;
-    *"pr list"*"--state merged"*) echo "[{\"headRefName\":\"merged-branch\",\"number\":99,\"mergedAt\":\"2025-01-15T10:00:00Z\"}]" ;;
+    *"pr list"*"merged"*) echo "[{\"headRefName\":\"merged-branch\",\"number\":99,\"mergedAt\":\"2025-01-15T10:00:00Z\"}]" ;;
     *) echo "[]" ;;
   esac'
 
@@ -59,13 +62,33 @@ setup() {
   assert_output --partial "PR #99"
 }
 
+@test "detects merged PR via merge-date search, not creation-ordered list" {
+  # Regression: branches opened long ago but merged recently fall outside gh's
+  # default creation-ordered `--state merged` window. The merged lookup must
+  # search by merge date and sort by recency. This mock only answers that exact
+  # query shape, so a regression to the old invocation reads as not-merged.
+  create_test_worktree "late-merge"
+  add_commit_to_worktree "late-merge" "late merge work"
+
+  mock_gh 'case "$*" in
+    *"pr list"*"--state open"*) echo "[]" ;;
+    *"pr list"*"is:merged"*"sort:updated-desc"*) echo "[{\"headRefName\":\"late-merge\",\"number\":123,\"mergedAt\":\"2026-05-28T10:00:00Z\"}]" ;;
+    *) echo "[]" ;;
+  esac'
+
+  run_wt list
+
+  assert_success
+  assert_output --partial "PR #123"
+}
+
 @test "shows CI pass/fail/running" {
   create_test_worktree "ci-branch"
   add_commit_to_worktree "ci-branch" "ci commit"
 
   mock_gh 'case "$*" in
     *"pr list"*"--state open"*) echo "[{\"headRefName\":\"ci-branch\",\"number\":10,\"reviewDecision\":\"\"}]" ;;
-    *"pr list"*"--state merged"*) echo "[]" ;;
+    *"pr list"*"merged"*) echo "[]" ;;
     *"check-runs"*) echo "failure" ;;
     *) echo "[]" ;;
   esac'

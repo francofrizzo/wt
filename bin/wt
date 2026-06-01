@@ -109,6 +109,40 @@ workspace_remove() {
 
 # --- github helpers ---
 
+# _oldest_worktree_date prints the earliest worktree creation date (YYYY-MM-DD)
+# minus one day for timezone slack, or nothing if it can't be determined. Used
+# as a lower bound for the merged-PR search window.
+_oldest_worktree_date() {
+  local oldest="" d wt_path
+  while IFS= read -r wt_path; do
+    [ "$wt_path" = "$BARE" ] && continue
+    d=$(stat -f '%SB' -t '%Y-%m-%d' "$wt_path" 2>/dev/null) || continue
+    if [ -z "$oldest" ] || [[ "$d" < "$oldest" ]]; then
+      oldest="$d"
+    fi
+  done < <(git -C "$BARE" worktree list --porcelain | awk '/^worktree /{print $2}')
+  [ -z "$oldest" ] && return
+  date -v-1d -j -f "%Y-%m-%d" "$oldest" "+%Y-%m-%d" 2>/dev/null || echo "$oldest"
+}
+
+# _merged_prs_json prints a JSON array of merged PRs ({headRefName, number,
+# mergedAt}) covering every existing worktree branch. gh's default list order is
+# by creation date, so a fixed `--state merged --limit N` window silently drops
+# branches that were opened long ago but merged recently. Instead we search by
+# merge date (bounded below by the oldest worktree) and sort by recency, so the
+# branches we still have worktrees for are never truncated out.
+_merged_prs_json() {
+  local since
+  since=$(_oldest_worktree_date)
+  if [ -z "$since" ]; then
+    gh pr list --repo "$REPO" --state merged --limit 100 \
+      --json headRefName,number,mergedAt 2>/dev/null || echo "[]"
+    return
+  fi
+  gh pr list --repo "$REPO" --search "is:merged merged:>=$since sort:updated-desc" --limit 200 \
+    --json headRefName,number,mergedAt 2>/dev/null || echo "[]"
+}
+
 gh_status() {
   local branch="$1" review="$2"
   local checks_json
@@ -142,7 +176,7 @@ gh_status() {
 cmd_list() {
   local open_prs merged_prs
   open_prs=$(gh pr list --repo "$REPO" --state open --json headRefName,number,reviewDecision 2>/dev/null || echo "[]")
-  merged_prs=$(gh pr list --repo "$REPO" --state merged --limit 50 --json headRefName,number,mergedAt 2>/dev/null || echo "[]")
+  merged_prs=$(_merged_prs_json)
 
   local first=true
   while IFS= read -r line; do
@@ -423,7 +457,7 @@ cmd_prune() {
   done
 
   local merged_prs
-  merged_prs=$(gh pr list --repo "$REPO" --state merged --limit 50 --json headRefName,number 2>/dev/null || echo "[]")
+  merged_prs=$(_merged_prs_json)
 
   echo "Fetching origin..." >&2
   git -C "$BARE" fetch origin >&2
